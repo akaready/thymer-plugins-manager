@@ -1,6 +1,7 @@
 // Fallback only — the live value is read from the plugin's own config at load.
-const PM_VERSION = '1.23.4';
+const PM_VERSION = '1.23.5';
 const PM_UP_TO_DATE_TITLE = 'Everything up to date!';
+const PM_STATUS_TOAST_IDLE_MS = 5000;
 
 // Curated per-card color palette (one representative Tailwind-500 per hue). Kept small
 // and inlined so this paste-only plugin stays self-contained (no shared-module import).
@@ -4379,7 +4380,19 @@ class Plugin extends AppPlugin {
      * starts or settles.
      */
     _toastProgress(title, message) {
-        this._setStatus({ title, line: message || '' });
+        // A completed toast may still be inside its five-second idle window. Reset every field
+        // so a fresh run cannot inherit `final: true` or its pending auto-dismiss timer.
+        this._setStatus({
+            title,
+            line: message || '',
+            total: 0,
+            done: 0,
+            items: [],
+            final: false,
+            verb: '',
+            verbDone: '',
+            finalTitle: '',
+        });
     }
 
     /**
@@ -4405,9 +4418,8 @@ class Plugin extends AppPlugin {
                     // rule that would leak onto Thymer's toast chrome for every other plugin.
                     messageHTML: '<span class="pm-toast-status" style="white-space: pre-line"></span>',
                     dismissible: true,
-                    // No autoDestroyTime and an OK button from the START: this is the ONE toast for
-                    // the whole run, so it has to survive into the finished state. Handing off to a
-                    // separate summary toast is what made the bar flash past unread.
+                    // No native autoDestroyTime: its countdown would start NOW and could kill a
+                    // long check mid-run. Our idle timer starts only when this toast becomes final.
                     primaryLabel: 'OK',
                     onPrimary: () => this._clearProgressToast(),
                 });
@@ -4417,6 +4429,7 @@ class Plugin extends AppPlugin {
                 // never worth throwing over.
                 this._titleNode = [...this._progressToast.element.querySelectorAll('*')]
                     .find(el => el.children.length === 0 && el.textContent.trim() === this._status.title) || null;
+                this._bindStatusToastIdlePause(this._progressToast.element);
             } catch (e) {
                 this._progressToast = null;
                 return;
@@ -4424,6 +4437,8 @@ class Plugin extends AppPlugin {
         }
 
         this._renderStatus();
+        if (this._status.final) this._scheduleStatusAutoDismiss();
+        else this._cancelStatusAutoDismiss();
     }
 
     /** Update one row and redraw the toast from that single state change. */
@@ -4439,7 +4454,8 @@ class Plugin extends AppPlugin {
 
     /**
      * Terminal state. The toast stays exactly where it is — bar full, rows checked off, headline
-     * settling to the supplied finale (or the derived completed count when there were failures).
+     * settling to the supplied finale (or the derived completed count when there were failures) —
+     * then dismisses after five seconds without hover or keyboard interaction.
      */
     _finishStatus(finalTitle = '') {
         // If the user hit OK mid-run, they're done with it — don't resurrect a fresh toast on them.
@@ -4514,7 +4530,58 @@ class Plugin extends AppPlugin {
         } catch (e) { }
     }
 
+    /** Pause final-toast dismissal while the user is hovering it or focused inside it. */
+    _bindStatusToastIdlePause(element) {
+        if (!element || typeof element.addEventListener !== 'function') return;
+
+        const interaction = { pointer: false, focus: false };
+        this._statusToastInteraction = interaction;
+        const sync = () => {
+            if (interaction.pointer || interaction.focus) this._cancelStatusAutoDismiss();
+            else this._scheduleStatusAutoDismiss();
+        };
+        const onPointerEnter = () => { interaction.pointer = true; sync(); };
+        const onPointerLeave = () => { interaction.pointer = false; sync(); };
+        const onFocusIn = () => { interaction.focus = true; sync(); };
+        const onFocusOut = (event) => {
+            if (typeof element.contains !== 'function' || !element.contains(event.relatedTarget)) {
+                interaction.focus = false;
+                sync();
+            }
+        };
+
+        element.addEventListener('pointerenter', onPointerEnter);
+        element.addEventListener('pointerleave', onPointerLeave);
+        element.addEventListener('focusin', onFocusIn);
+        element.addEventListener('focusout', onFocusOut);
+        this._statusToastInteractionCleanup = () => {
+            element.removeEventListener('pointerenter', onPointerEnter);
+            element.removeEventListener('pointerleave', onPointerLeave);
+            element.removeEventListener('focusin', onFocusIn);
+            element.removeEventListener('focusout', onFocusOut);
+        };
+    }
+
+    _scheduleStatusAutoDismiss() {
+        this._cancelStatusAutoDismiss();
+        const interaction = this._statusToastInteraction;
+        if (!this._progressToast || !this._status?.final || interaction?.pointer || interaction?.focus) return;
+        this._statusAutoDismissTimer = setTimeout(() => {
+            this._statusAutoDismissTimer = null;
+            this._clearProgressToast();
+        }, PM_STATUS_TOAST_IDLE_MS);
+    }
+
+    _cancelStatusAutoDismiss() {
+        if (this._statusAutoDismissTimer != null) clearTimeout(this._statusAutoDismissTimer);
+        this._statusAutoDismissTimer = null;
+    }
+
     _clearProgressToast() {
+        this._cancelStatusAutoDismiss();
+        try { if (this._statusToastInteractionCleanup) this._statusToastInteractionCleanup(); } catch (e) { }
+        this._statusToastInteractionCleanup = null;
+        this._statusToastInteraction = null;
         try { if (this._progressToast) this._progressToast.destroy(); } catch (e) { }
         this._progressToast = null;
         this._statusNode = null;
