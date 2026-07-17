@@ -1,5 +1,5 @@
 // Fallback only — the live value is read from the plugin's own config at load.
-const PM_VERSION = '1.22.1';
+const PM_VERSION = '1.23.0';
 
 // Curated per-card color palette (one representative Tailwind-500 per hue). Kept small
 // and inlined so this paste-only plugin stays self-contained (no shared-module import).
@@ -261,22 +261,36 @@ class Plugin extends AppPlugin {
             for (const p of allPlugins) {
                 if (checkCount >= MAX_CHECKS) break;
 
+                // Progressive reveal in the live toast (when one is up): the row appears with a
+                // • the moment this plugin's check starts, and settles to ✓/✗ in place — so the
+                // report builds as the run walks the list instead of being drawn at the end.
+                let rowIdx = -1;
                 try {
                     const { json } = p.getExistingCodeAndConfig();
                     const repo = json.__source_repo;
                     if (repo && this._isValidGithubUrl(repo)) {
                         checkCount++;
+                        rowIdx = this._appendStatusItem({
+                            name: json.name || 'Unnamed Plugin',
+                            version: json.version || json.ver || '?',
+                        });
                         const { json: remoteJson } = await this.fetchGithubRepo(repo, { sourceFiles: json.__source_files });
                         if (remoteJson.version && remoteJson.version !== json.version) {
                             updatesAvailable[p.getGuid()] = {
                                 name: json.name || "Unnamed Plugin",
                                 version: remoteJson.version
                             };
+                            // Update found: the row shows "v<current> → v<new>".
+                            if (rowIdx >= 0) this._markStatusItem(rowIdx, 'done', { from: json.version || '?', to: remoteJson.version });
+                        } else if (rowIdx >= 0) {
+                            // Up to date: just the current version.
+                            this._markStatusItem(rowIdx, 'done');
                         }
                         // Avoid GitHub rate limiting between requests
                         await new Promise(r => setTimeout(r, isManual ? 500 : 1000));
                     }
                 } catch (e) {
+                    if (rowIdx >= 0) this._markStatusItem(rowIdx, 'failed');
                     if (e.message && (e.message.includes('rate limit') || e.message.includes('403'))) {
                         console.warn('[Plugins Manager] GitHub rate limit hit during check, stopping early.');
                         if (isManual) {
@@ -4323,21 +4337,15 @@ class Plugin extends AppPlugin {
         btn.disabled = true;
 
         try {
-            await this.checkForAllUpdatesInBackground();
+            // Same live toast as the palette command: rows reveal per plugin as the check
+            // walks the list, then the toast settles in place with the outcome.
+            this._toastProgress('Checking for updates…');
+            await this.checkForAllUpdatesInBackground({ manual: true, notifyNew: false, announce: false });
             this.loadPlugins(container);
-            this.ui.addToaster({
-                title: "Update Check Complete",
-                message: "Checked for new versions.",
-                autoDestroyTime: 3000,
-                dismissible: true
-            });
+            const n = Object.keys(this._readUpdateCache()).length;
+            this._setStatus({ final: true, title: n ? `${n} Update${n === 1 ? '' : 's'} Available` : 'Everything is up to date' });
         } catch (e) {
-            this.ui.addToaster({
-                title: "Update Check Failed",
-                message: e.message,
-                autoDestroyTime: 5000,
-                dismissible: true
-            });
+            this._toastSummary('Update Check Failed', e.message);
         } finally {
             btn.innerHTML = originalHtml;
             btn.disabled = false;
@@ -4424,6 +4432,19 @@ class Plugin extends AppPlugin {
     }
 
     /**
+     * Progressive reveal: append one row to the live toast the moment its work STARTS
+     * (the check loop calls this per plugin), so the list builds down the toast in
+     * real time instead of being drawn all at once at the end. No-ops (returns -1)
+     * when no live toast is up — the silent background check must stay silent.
+     */
+    _appendStatusItem(item) {
+        if (!this._progressToast || !this._status) return -1;
+        this._status.items.push(Object.assign({ state: 'active' }, item));
+        this._renderStatus();
+        return this._status.items.length - 1;
+    }
+
+    /**
      * Terminal state. The toast stays exactly where it is — bar full, rows checked off, headline
      * settling from "Updating (2/3)" to "Updated (3/3)". _renderStatus() derives the headline from
      * the rows, so there's no title to pass and no count to keep in step by hand.
@@ -4434,40 +4455,42 @@ class Plugin extends AppPlugin {
         this._setStatus({ final: true });
     }
 
+    /**
+     * Two-tone braille chase: a dim full-dot ⣿ backdrop with the lit 6-of-8 frame
+     * overlaid on top, so the two dark dots read as a gap CHASING around the ring —
+     * shape-based motion, one text color, no reliance on accent/color styling.
+     */
+    _spinnerNode() {
+        const FRAMES = ['⣾', '⣽', '⣻', '⢿', '⡿', '⣟', '⣯', '⣷'];
+        const wrap = document.createElement('span');
+        wrap.style.cssText = 'position:relative;display:inline-block';
+        const bg = document.createElement('span');
+        bg.textContent = '⣿';
+        bg.style.opacity = '0.25';
+        const fg = document.createElement('span');
+        fg.textContent = FRAMES[(this._statusFrame || 0) % FRAMES.length];
+        fg.style.cssText = 'position:absolute;left:0;top:0';
+        wrap.append(bg, fg);
+        return wrap;
+    }
+
     _renderStatus() {
         const s = this._status;
         if (!s) return;
 
-        const SPINNER = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
         this._statusFrame = (this._statusFrame || 0) + 1;
-        const spin = SPINNER[this._statusFrame % SPINNER.length];
 
         let title = s.title;
-        const lines = [];
+        const body = document.createDocumentFragment();
 
         if (s.total > 0) {
             // One cell per plugin — the bar IS the plugin count, so it reads as a tally rather
             // than an abstract percentage.
             const filled = Math.max(0, Math.min(s.total, s.done));
-            lines.push(`${'▰'.repeat(filled)}${'▱'.repeat(s.total - filled)}`);
-            lines.push('');
-
-            for (const it of s.items) {
-                let mark = '·';                                  // pending
-                if (it.state === 'done') mark = '✓';
-                else if (it.state === 'failed') mark = '✗';
-                // A run cut short (self-update tears down our context) must not leave a row
-                // spinning forever, so a finished status downgrades stragglers back to pending.
-                else if (it.state === 'active') mark = s.final ? '·' : spin;
-
-                // Mark leads the row: a fixed-width first column aligns for free, with no padding
-                // math and no dependence on a monospace face.
-                //
-                // Target version comes from the update cache at seed time, so a plugin that fails
-                // still names the version it failed to reach.
-                const delta = it.to ? ` — v${it.from || '?'} → v${it.to}` : '';
-                lines.push(`${mark}  ${it.name}${delta}`);
-            }
+            const bar = document.createElement('div');
+            bar.textContent = `${'▰'.repeat(filled)}${'▱'.repeat(s.total - filled)}`;
+            bar.style.marginBottom = '4px';
+            body.appendChild(bar);
 
             const ok = s.items.filter(it => it.state === 'done').length;
             const bad = s.items.filter(it => it.state === 'failed').length;
@@ -4475,18 +4498,41 @@ class Plugin extends AppPlugin {
             if (bad) title += ` • ${bad} Failed`;
         }
 
-        // While checking there's no bar and no rows, so the spinner rides the TITLE — the message
-        // body is a smaller, muted font where a braille glyph reads as a speck of dust. Once the
-        // bar and per-row spinners exist they carry the motion and the headline goes still.
-        const showTitleSpinner = !s.final && s.total === 0;
+        for (const it of s.items) {
+            // A run cut short (self-update tears down our context) must not leave a row
+            // active forever, so a finished status downgrades stragglers back to pending.
+            let mark = '·';                                      // pending
+            if (it.state === 'done') mark = '✓';
+            else if (it.state === 'failed') mark = '✗';
+            else if (it.state === 'active') mark = s.final ? '·' : '•';
+
+            const row = document.createElement('div');
+            // Mark leads the row in a fixed-width column: aligns for free, no padding math,
+            // no dependence on a monospace face.
+            const markEl = document.createElement('span');
+            markEl.style.cssText = 'display:inline-block;width:1.4em';
+            markEl.textContent = mark;
+            // With an update: "v1.2.3 → v1.2.5". Without: just the current version.
+            // Target version comes from the update cache at seed time, so a row that FAILS
+            // still names the version it failed to reach.
+            const ver = it.to ? `v${it.from || '?'} → v${it.to}` : (it.version ? `v${it.version}` : '');
+            const textEl = document.createElement('span');
+            textEl.textContent = `${it.name}${ver ? ' — ' + ver : ''}`;
+            row.append(markEl, textEl);
+            body.appendChild(row);
+        }
 
         try {
             if (this._titleNode) {
-                this._titleNode.textContent = showTitleSpinner ? `${title}  ${spin}` : title;
-            } else if (showTitleSpinner) {
-                lines.unshift(spin);
+                // The chase spinner rides the headline while the run is live; a settled toast
+                // holds still.
+                if (s.final) {
+                    this._titleNode.textContent = title;
+                } else {
+                    this._titleNode.replaceChildren(document.createTextNode(`${title}  `), this._spinnerNode());
+                }
             }
-            if (this._statusNode) this._statusNode.textContent = lines.join('\n');
+            if (this._statusNode) this._statusNode.replaceChildren(body);
         } catch (e) {
             this._stopStatusTimer(); // the node went away with the toast
         }
@@ -4557,10 +4603,13 @@ class Plugin extends AppPlugin {
         if (this._updatingAll) return { count: 0, failed: 0 };
 
         const upToDate = () => {
-            // Tears down the "Checking…" toast (and its spinner) rather than landing on top of it.
-            // This state is terminal, so it gets a plain toast — a spinner still turning next to
-            // "Everything is up to date" would read as "still working".
-            this._clearProgressToast();
+            // With a live toast up, the per-plugin check rows are already on screen and settled —
+            // finish the SAME toast so the report stays readable instead of tearing it down and
+            // landing a fresh one on top of it.
+            if (this._progressToast) {
+                this._setStatus({ final: true, title: 'Everything is up to date' });
+                return { count: 0, failed: 0 };
+            }
             if (announceNoop) {
                 try {
                     this.ui.addToaster({
