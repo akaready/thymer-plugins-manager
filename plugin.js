@@ -1,5 +1,5 @@
 // Fallback only — the live value is read from the plugin's own config at load.
-const PM_VERSION = '1.23.2';
+const PM_VERSION = '1.23.3';
 const PM_UP_TO_DATE_TITLE = 'Everything up to date!';
 
 // Curated per-card color palette (one representative Tailwind-500 per hue). Kept small
@@ -4373,10 +4373,10 @@ class Plugin extends AppPlugin {
      * one and the stack becomes unreadable. addToaster() returns a PluginToaster with `element`,
      * and accepts `messageHTML` — so we inject a span we OWN and rewrite it, rather than pinning
      * to Thymer's internal toast classes. The toast is never recreated mid-run, so it can't
-     * flicker or replay its enter animation on every frame.
+     * flicker or replay its enter animation on every state change.
      *
-     * Frames are drawn by a single interval; the update loop only pushes state via _setStatus()
-     * and stays free of any animation logic.
+     * The update loop pushes state via _setStatus(); the bar redraws only when work actually
+     * starts or settles.
      */
     _toastProgress(title, message) {
         this._setStatus({ title, line: message || '' });
@@ -4388,7 +4388,7 @@ class Plugin extends AppPlugin {
      *   total  — >0 switches the body to a progress bar + per-plugin rows
      *   items  — [{ name, state: 'pending'|'active'|'done'|'failed', from, to }]
      *   done   — how many rows have settled (drives the bar)
-     *   final  — terminal; stops the animation and leaves the toast up
+     *   final  — terminal; leaves the completed toast up
      */
     _setStatus(patch) {
         this._status = Object.assign(
@@ -4423,16 +4423,7 @@ class Plugin extends AppPlugin {
             }
         }
 
-        // Motion should never be mandatory.
-        const reduced = (() => {
-            try { return window.matchMedia('(prefers-reduced-motion: reduce)').matches; } catch (e) { return false; }
-        })();
-
         this._renderStatus();
-        if (this._status.final) this._stopStatusTimer();
-        else if (!reduced && !this._statusTimer) {
-            this._statusTimer = setInterval(() => this._renderStatus(), 80);
-        }
     }
 
     /** Settle one row and advance the bar. */
@@ -4460,27 +4451,18 @@ class Plugin extends AppPlugin {
         const s = this._status;
         if (!s) return;
 
-        this._statusFrame = (this._statusFrame || 0) + 1;
-
         let title = s.title;
         const body = document.createDocumentFragment();
 
         if (s.total > 0) {
             // One cell per plugin — the bar IS the plugin count, so it reads as a tally rather
             // than an abstract percentage. Bigger than body text on purpose: it is the run's
-            // headline gauge. While work is live the cell at the leading edge blinks
-            // outline/filled so the bar itself carries motion, not just its length.
+            // headline gauge. A cell fills only after that plugin's work settles.
             const filled = Math.max(0, Math.min(s.total, s.done));
-            let cells = '▰'.repeat(filled);
-            if (!s.final && filled < s.total) {
-                cells += ((this._statusFrame >> 2) % 2) ? '▰' : '▱';
-                cells += '▱'.repeat(s.total - filled - 1);
-            } else {
-                cells += '▱'.repeat(s.total - filled);
-            }
+            const cells = '▰'.repeat(filled) + '▱'.repeat(s.total - filled);
             const bar = document.createElement('div');
             bar.textContent = cells;
-            bar.style.cssText = 'font-size:1.3em;letter-spacing:2px;line-height:1.2;margin-bottom:6px';
+            bar.style.cssText = 'font-size:1.45em;letter-spacing:2px;line-height:1.2;margin-bottom:6px';
             body.appendChild(bar);
 
             const ok = s.items.filter(it => it.state === 'done').length;
@@ -4526,24 +4508,15 @@ class Plugin extends AppPlugin {
                 this._titleNode.textContent = title;
             }
             if (this._statusNode) this._statusNode.replaceChildren(body);
-        } catch (e) {
-            this._stopStatusTimer(); // the node went away with the toast
-        }
-    }
-
-    _stopStatusTimer() {
-        if (this._statusTimer) clearInterval(this._statusTimer);
-        this._statusTimer = null;
+        } catch (e) { }
     }
 
     _clearProgressToast() {
-        this._stopStatusTimer();
         try { if (this._progressToast) this._progressToast.destroy(); } catch (e) { }
         this._progressToast = null;
         this._statusNode = null;
         this._titleNode = null;
         this._status = null;
-        this._statusFrame = 0;
     }
 
     /**
