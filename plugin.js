@@ -1,5 +1,5 @@
 // Fallback only — the live value is read from the plugin's own config at load.
-const PM_VERSION = '1.23.0';
+const PM_VERSION = '1.23.1';
 
 // Curated per-card color palette (one representative Tailwind-500 per hue). Kept small
 // and inlined so this paste-only plugin stays self-contained (no shared-module import).
@@ -255,42 +255,55 @@ class Plugin extends AppPlugin {
             const allGlobals = await this.data.getAllGlobalPlugins();
             const allCollections = await this.data.getAllCollections();
             const allPlugins = [...allGlobals, ...allCollections];
-            let checkCount = 0;
             const MAX_CHECKS = isManual ? 100 : 50; // Higher cap for manual checks
 
+            // Enumerate the checkable plugins UP FRONT so the live toast (when one is up) can
+            // show the WHOLE list at once — the • then travels down the list as the loop walks
+            // it, and the tally bar at the top fills alongside.
+            const candidates = [];
             for (const p of allPlugins) {
-                if (checkCount >= MAX_CHECKS) break;
-
-                // Progressive reveal in the live toast (when one is up): the row appears with a
-                // • the moment this plugin's check starts, and settles to ✓/✗ in place — so the
-                // report builds as the run walks the list instead of being drawn at the end.
-                let rowIdx = -1;
+                if (candidates.length >= MAX_CHECKS) break;
                 try {
                     const { json } = p.getExistingCodeAndConfig();
                     const repo = json.__source_repo;
-                    if (repo && this._isValidGithubUrl(repo)) {
-                        checkCount++;
-                        rowIdx = this._appendStatusItem({
-                            name: json.name || 'Unnamed Plugin',
-                            version: json.version || json.ver || '?',
-                        });
-                        const { json: remoteJson } = await this.fetchGithubRepo(repo, { sourceFiles: json.__source_files });
-                        if (remoteJson.version && remoteJson.version !== json.version) {
-                            updatesAvailable[p.getGuid()] = {
-                                name: json.name || "Unnamed Plugin",
-                                version: remoteJson.version
-                            };
-                            // Update found: the row shows "v<current> → v<new>".
-                            if (rowIdx >= 0) this._markStatusItem(rowIdx, 'done', { from: json.version || '?', to: remoteJson.version });
-                        } else if (rowIdx >= 0) {
-                            // Up to date: just the current version.
-                            this._markStatusItem(rowIdx, 'done');
-                        }
-                        // Avoid GitHub rate limiting between requests
-                        await new Promise(r => setTimeout(r, isManual ? 500 : 1000));
+                    if (repo && this._isValidGithubUrl(repo)) candidates.push({ p, json, repo });
+                } catch (e) { }
+            }
+            if (this._progressToast && candidates.length) {
+                this._setStatus({
+                    verb: 'Checking', verbDone: 'Checked',
+                    total: candidates.length,
+                    done: 0,
+                    finalTitle: '',
+                    items: candidates.map(c => ({
+                        name: c.json.name || 'Unnamed Plugin',
+                        version: c.json.version || c.json.ver || '?',
+                        state: 'pending',
+                    })),
+                });
+            }
+
+            for (let i = 0; i < candidates.length; i++) {
+                const { p, json, repo } = candidates[i];
+                // The traveling dot: this row goes • while its check runs, settles to ✓/✗ below.
+                this._markStatusItem(i, 'active');
+                try {
+                    const { json: remoteJson } = await this.fetchGithubRepo(repo, { sourceFiles: json.__source_files });
+                    if (remoteJson.version && remoteJson.version !== json.version) {
+                        updatesAvailable[p.getGuid()] = {
+                            name: json.name || "Unnamed Plugin",
+                            version: remoteJson.version
+                        };
+                        // Update found: the row shows "v<current> → v<new>".
+                        this._markStatusItem(i, 'done', { from: json.version || '?', to: remoteJson.version });
+                    } else {
+                        // Up to date: just the current version.
+                        this._markStatusItem(i, 'done');
                     }
+                    // Avoid GitHub rate limiting between requests
+                    await new Promise(r => setTimeout(r, isManual ? 500 : 1000));
                 } catch (e) {
-                    if (rowIdx >= 0) this._markStatusItem(rowIdx, 'failed');
+                    this._markStatusItem(i, 'failed');
                     if (e.message && (e.message.includes('rate limit') || e.message.includes('403'))) {
                         console.warn('[Plugins Manager] GitHub rate limit hit during check, stopping early.');
                         if (isManual) {
@@ -4343,7 +4356,7 @@ class Plugin extends AppPlugin {
             await this.checkForAllUpdatesInBackground({ manual: true, notifyNew: false, announce: false });
             this.loadPlugins(container);
             const n = Object.keys(this._readUpdateCache()).length;
-            this._setStatus({ final: true, title: n ? `${n} Update${n === 1 ? '' : 's'} Available` : 'Everything is up to date' });
+            this._setStatus({ final: true, finalTitle: n ? `${n} Update${n === 1 ? '' : 's'} Available` : 'Everything is up to date' });
         } catch (e) {
             this._toastSummary('Update Check Failed', e.message);
         } finally {
@@ -4378,7 +4391,7 @@ class Plugin extends AppPlugin {
      */
     _setStatus(patch) {
         this._status = Object.assign(
-            { title: '', total: 0, done: 0, items: [], final: false },
+            { title: '', total: 0, done: 0, items: [], final: false, verb: '', verbDone: '', finalTitle: '' },
             this._status || {},
             patch
         );
@@ -4431,18 +4444,6 @@ class Plugin extends AppPlugin {
         this._renderStatus();
     }
 
-    /**
-     * Progressive reveal: append one row to the live toast the moment its work STARTS
-     * (the check loop calls this per plugin), so the list builds down the toast in
-     * real time instead of being drawn all at once at the end. No-ops (returns -1)
-     * when no live toast is up — the silent background check must stay silent.
-     */
-    _appendStatusItem(item) {
-        if (!this._progressToast || !this._status) return -1;
-        this._status.items.push(Object.assign({ state: 'active' }, item));
-        this._renderStatus();
-        return this._status.items.length - 1;
-    }
 
     /**
      * Terminal state. The toast stays exactly where it is — bar full, rows checked off, headline
@@ -4463,10 +4464,10 @@ class Plugin extends AppPlugin {
     _spinnerNode() {
         const FRAMES = ['⣾', '⣽', '⣻', '⢿', '⡿', '⣟', '⣯', '⣷'];
         const wrap = document.createElement('span');
-        wrap.style.cssText = 'position:relative;display:inline-block';
+        wrap.style.cssText = 'position:relative;display:inline-block;font-size:1.15em;line-height:1';
         const bg = document.createElement('span');
         bg.textContent = '⣿';
-        bg.style.opacity = '0.25';
+        bg.style.opacity = '0.18';
         const fg = document.createElement('span');
         fg.textContent = FRAMES[(this._statusFrame || 0) % FRAMES.length];
         fg.style.cssText = 'position:absolute;left:0;top:0';
@@ -4485,18 +4486,31 @@ class Plugin extends AppPlugin {
 
         if (s.total > 0) {
             // One cell per plugin — the bar IS the plugin count, so it reads as a tally rather
-            // than an abstract percentage.
+            // than an abstract percentage. Bigger than body text on purpose: it is the run's
+            // headline gauge. While work is live the cell at the leading edge blinks
+            // outline/filled so the bar itself carries motion, not just its length.
             const filled = Math.max(0, Math.min(s.total, s.done));
+            let cells = '▰'.repeat(filled);
+            if (!s.final && filled < s.total) {
+                cells += ((this._statusFrame >> 2) % 2) ? '▰' : '▱';
+                cells += '▱'.repeat(s.total - filled - 1);
+            } else {
+                cells += '▱'.repeat(s.total - filled);
+            }
             const bar = document.createElement('div');
-            bar.textContent = `${'▰'.repeat(filled)}${'▱'.repeat(s.total - filled)}`;
-            bar.style.marginBottom = '4px';
+            bar.textContent = cells;
+            bar.style.cssText = 'font-size:1.3em;letter-spacing:2px;line-height:1.2;margin-bottom:6px';
             body.appendChild(bar);
 
             const ok = s.items.filter(it => it.state === 'done').length;
             const bad = s.items.filter(it => it.state === 'failed').length;
-            title = `${s.final ? 'Updated' : 'Updating'} (${ok}/${s.total}) Plugin${s.total === 1 ? '' : 's'}`;
+            const settled = ok + bad;
+            const verb = s.final ? (s.verbDone || 'Updated') : (s.verb || 'Updating');
+            title = `${verb} (${settled}/${s.total}) Plugin${s.total === 1 ? '' : 's'}`;
             if (bad) title += ` • ${bad} Failed`;
         }
+        // A finalize call may pin its own headline ("Everything is up to date").
+        if (s.final && s.finalTitle) title = s.finalTitle;
 
         for (const it of s.items) {
             // A run cut short (self-update tears down our context) must not leave a row
@@ -4507,6 +4521,9 @@ class Plugin extends AppPlugin {
             else if (it.state === 'active') mark = s.final ? '·' : '•';
 
             const row = document.createElement('div');
+            // Pending rows sit dim; the row under the traveling • (and everything settled)
+            // is full strength — so progress reads as brightness moving down the list.
+            if (it.state === 'pending' || (it.state === 'active' && s.final)) row.style.opacity = '0.55';
             // Mark leads the row in a fixed-width column: aligns for free, no padding math,
             // no dependence on a monospace face.
             const markEl = document.createElement('span');
@@ -4607,7 +4624,7 @@ class Plugin extends AppPlugin {
             // finish the SAME toast so the report stays readable instead of tearing it down and
             // landing a fresh one on top of it.
             if (this._progressToast) {
-                this._setStatus({ final: true, title: 'Everything is up to date' });
+                this._setStatus({ final: true, finalTitle: 'Everything is up to date' });
                 return { count: 0, failed: 0 };
             }
             if (announceNoop) {
@@ -4666,6 +4683,8 @@ class Plugin extends AppPlugin {
             // version it failed to reach, even if it blew up before the fetch.
             this._setStatus({
                 title: 'Updating…',
+                verb: 'Updating', verbDone: 'Updated',
+                finalTitle: '',
                 total: pluginsToUpdate.length,
                 done: 0,
                 items: pluginsToUpdate.map(p => {
