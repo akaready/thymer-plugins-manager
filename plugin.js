@@ -1,5 +1,5 @@
 // Fallback only — the live value is read from the plugin's own config at load.
-const PM_VERSION = '1.23.3';
+const PM_VERSION = '1.23.4';
 const PM_UP_TO_DATE_TITLE = 'Everything up to date!';
 
 // Curated per-card color palette (one representative Tailwind-500 per hue). Kept small
@@ -260,7 +260,7 @@ class Plugin extends AppPlugin {
 
             // Enumerate the checkable plugins UP FRONT so the live toast (when one is up) can
             // show the WHOLE list at once — the • then travels down the list as the loop walks
-            // it, and the tally bar at the top fills alongside.
+            // it, and each tally cell fills as its matching row becomes active.
             const candidates = [];
             for (const p of allPlugins) {
                 if (candidates.length >= MAX_CHECKS) break;
@@ -4426,12 +4426,12 @@ class Plugin extends AppPlugin {
         this._renderStatus();
     }
 
-    /** Settle one row and advance the bar. */
+    /** Update one row and redraw the toast from that single state change. */
     _markStatusItem(index, state, extra) {
         const s = this._status;
         if (!s || !s.items[index]) return;
         Object.assign(s.items[index], { state }, extra || {});
-        // Failures still count as progress — the bar tracks work completed, not work succeeded.
+        // Failures still count as settled work in the headline total.
         s.done = s.items.filter(it => it.state === 'done' || it.state === 'failed').length;
         this._renderStatus();
     }
@@ -4453,12 +4453,15 @@ class Plugin extends AppPlugin {
 
         let title = s.title;
         const body = document.createDocumentFragment();
+        // This one condition drives BOTH row opacity and its tally cell, keeping them in lockstep.
+        // A finalized active row is treated as pending because it never actually settled.
+        const isRevealed = it => it.state !== 'pending' && !(it.state === 'active' && s.final);
 
         if (s.total > 0) {
             // One cell per plugin — the bar IS the plugin count, so it reads as a tally rather
             // than an abstract percentage. Bigger than body text on purpose: it is the run's
-            // headline gauge. A cell fills only after that plugin's work settles.
-            const filled = Math.max(0, Math.min(s.total, s.done));
+            // headline gauge. A cell fills exactly when its matching row becomes opaque.
+            const filled = Math.max(0, Math.min(s.total, s.items.filter(isRevealed).length));
             const cells = '▰'.repeat(filled) + '▱'.repeat(s.total - filled);
             const bar = document.createElement('div');
             bar.textContent = cells;
@@ -4486,7 +4489,7 @@ class Plugin extends AppPlugin {
             const row = document.createElement('div');
             // Pending rows sit dim; the row under the traveling • (and everything settled)
             // is full strength — so progress reads as brightness moving down the list.
-            if (it.state === 'pending' || (it.state === 'active' && s.final)) row.style.opacity = '0.55';
+            if (!isRevealed(it)) row.style.opacity = '0.55';
             // Mark leads the row in a fixed-width column: aligns for free, no padding math,
             // no dependence on a monospace face.
             const markEl = document.createElement('span');
