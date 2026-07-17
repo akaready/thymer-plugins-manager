@@ -1,5 +1,6 @@
 // Fallback only — the live value is read from the plugin's own config at load.
-const PM_VERSION = '1.23.1';
+const PM_VERSION = '1.23.2';
+const PM_UP_TO_DATE_TITLE = 'Everything up to date!';
 
 // Curated per-card color palette (one representative Tailwind-500 per hue). Kept small
 // and inlined so this paste-only plugin stays self-contained (no shared-module import).
@@ -4356,7 +4357,7 @@ class Plugin extends AppPlugin {
             await this.checkForAllUpdatesInBackground({ manual: true, notifyNew: false, announce: false });
             this.loadPlugins(container);
             const n = Object.keys(this._readUpdateCache()).length;
-            this._setStatus({ final: true, finalTitle: n ? `${n} Update${n === 1 ? '' : 's'} Available` : 'Everything is up to date' });
+            this._setStatus({ final: true, finalTitle: n ? `${n} Update${n === 1 ? '' : 's'} Available` : PM_UP_TO_DATE_TITLE });
         } catch (e) {
             this._toastSummary('Update Check Failed', e.message);
         } finally {
@@ -4383,8 +4384,8 @@ class Plugin extends AppPlugin {
 
     /**
      * @param {object} patch
-     *   title  — the one headline: "Checking for updates…" → "Updating 3 plugins…" → "3 Plugins Updated"
-     *   total  — >0 switches the body from bare spinner to progress bar + per-plugin rows
+     *   title  — the one headline: "Checking for updates…" → "Updating 3 plugins…" → "Everything up to date!"
+     *   total  — >0 switches the body to a progress bar + per-plugin rows
      *   items  — [{ name, state: 'pending'|'active'|'done'|'failed', from, to }]
      *   done   — how many rows have settled (drives the bar)
      *   final  — terminal; stops the animation and leaves the toast up
@@ -4447,32 +4448,12 @@ class Plugin extends AppPlugin {
 
     /**
      * Terminal state. The toast stays exactly where it is — bar full, rows checked off, headline
-     * settling from "Updating (2/3)" to "Updated (3/3)". _renderStatus() derives the headline from
-     * the rows, so there's no title to pass and no count to keep in step by hand.
+     * settling to the supplied finale (or the derived completed count when there were failures).
      */
-    _finishStatus() {
+    _finishStatus(finalTitle = '') {
         // If the user hit OK mid-run, they're done with it — don't resurrect a fresh toast on them.
         if (!this._progressToast) return;
-        this._setStatus({ final: true });
-    }
-
-    /**
-     * Two-tone braille chase: a dim full-dot ⣿ backdrop with the lit 6-of-8 frame
-     * overlaid on top, so the two dark dots read as a gap CHASING around the ring —
-     * shape-based motion, one text color, no reliance on accent/color styling.
-     */
-    _spinnerNode() {
-        const FRAMES = ['⣾', '⣽', '⣻', '⢿', '⡿', '⣟', '⣯', '⣷'];
-        const wrap = document.createElement('span');
-        wrap.style.cssText = 'position:relative;display:inline-block;font-size:1.15em;line-height:1';
-        const bg = document.createElement('span');
-        bg.textContent = '⣿';
-        bg.style.opacity = '0.18';
-        const fg = document.createElement('span');
-        fg.textContent = FRAMES[(this._statusFrame || 0) % FRAMES.length];
-        fg.style.cssText = 'position:absolute;left:0;top:0';
-        wrap.append(bg, fg);
-        return wrap;
+        this._setStatus({ final: true, finalTitle });
     }
 
     _renderStatus() {
@@ -4509,7 +4490,7 @@ class Plugin extends AppPlugin {
             title = `${verb} (${settled}/${s.total}) Plugin${s.total === 1 ? '' : 's'}`;
             if (bad) title += ` • ${bad} Failed`;
         }
-        // A finalize call may pin its own headline ("Everything is up to date").
+        // A finalize call may pin its own headline ("Everything up to date!").
         if (s.final && s.finalTitle) title = s.finalTitle;
 
         for (const it of s.items) {
@@ -4541,13 +4522,8 @@ class Plugin extends AppPlugin {
 
         try {
             if (this._titleNode) {
-                // The chase spinner rides the headline while the run is live; a settled toast
-                // holds still.
-                if (s.final) {
-                    this._titleNode.textContent = title;
-                } else {
-                    this._titleNode.replaceChildren(document.createTextNode(`${title}  `), this._spinnerNode());
-                }
+                // The bar and traveling row marker carry live motion; keep the headline still.
+                this._titleNode.textContent = title;
             }
             if (this._statusNode) this._statusNode.replaceChildren(body);
         } catch (e) {
@@ -4624,13 +4600,13 @@ class Plugin extends AppPlugin {
             // finish the SAME toast so the report stays readable instead of tearing it down and
             // landing a fresh one on top of it.
             if (this._progressToast) {
-                this._setStatus({ final: true, finalTitle: 'Everything is up to date' });
+                this._setStatus({ final: true, finalTitle: PM_UP_TO_DATE_TITLE });
                 return { count: 0, failed: 0 };
             }
             if (announceNoop) {
                 try {
                     this.ui.addToaster({
-                        title: 'Everything is up to date',
+                        title: PM_UP_TO_DATE_TITLE,
                         message: 'No plugin updates are available.',
                         dismissible: true,
                         autoDestroyTime: 6000,
@@ -4675,8 +4651,8 @@ class Plugin extends AppPlugin {
         }
 
         if (notify) {
-            // Same toast, second act: the indeterminate spinner becomes a bar plus one row per
-            // plugin, seeded pending. Rows settle in place as the loop walks them.
+            // Same toast, second act: the bar and rows are seeded pending. Rows settle in place
+            // as the loop walks them.
             //
             // Both versions are known up front — the installed one from the plugin's own config,
             // the target one from the update cache — so a row that FAILS can still report the
@@ -4777,7 +4753,7 @@ class Plugin extends AppPlugin {
                         const toV = remoteJson.version || remoteJson.ver || '?';
                         updated.push(`${remoteJson.name || conf.name}  v${fromV} → v${toV}`);
 
-                        // Settles this row in the live toast: spinner → ✓ with the version delta.
+                        // Settles this row in the live toast: traveling dot → ✓ with the version delta.
                         // No new toast, so nothing stacks and nothing is replaced.
                         this._markStatusItem(i, 'done', { from: fromV, to: toV });
                     }
@@ -4806,13 +4782,13 @@ class Plugin extends AppPlugin {
 
         const title = failedNames.length > 0
             ? "Update All Completed with Errors"
-            : `Updated ${successCount} plugin${successCount === 1 ? '' : 's'}`;
+            : PM_UP_TO_DATE_TITLE;
 
         if (notify) {
             // Headless run: the status toast BECOMES the report. Its headline settles, the bar
             // stays full, every row keeps its mark and version delta, and it waits for OK. Nothing
             // is destroyed and replaced, so the progress you watched is the summary you read.
-            this._finishStatus();
+            this._finishStatus(failedNames.length === 0 ? PM_UP_TO_DATE_TITLE : '');
         } else {
             // Panel path: the list is right there and the button showed progress, so the old
             // auto-dismissing toast is still the right call. Unchanged.
