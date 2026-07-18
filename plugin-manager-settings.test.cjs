@@ -180,15 +180,94 @@ test('progress tally fills exactly when its matching row becomes opaque', () => 
 
     manager._renderStatus();
     let body = manager._statusNode.children[0];
-    assert.equal(body.children[0].textContent, '▰▱');
+    let bar = body.children[0];
+    assert.equal(bar.children[0].textContent, '▰');
+    assert.equal(bar.children[1].textContent, '▱');
     assert.equal(body.children[1].style.opacity, undefined);
     assert.equal(body.children[2].style.opacity, '0.55');
 
     manager._status.items[1].state = 'active';
     manager._renderStatus();
     body = manager._statusNode.children[0];
-    assert.equal(body.children[0].textContent, '▰▰');
+    bar = body.children[0];
+    assert.equal(bar.children[0].textContent, '▰');
+    assert.equal(bar.children[1].textContent, '▰');
     assert.equal(body.children[2].style.opacity, undefined);
+});
+
+test('a plugin that was actually updated renders its cell and row in Thymer green', () => {
+    const document = {
+        createDocumentFragment: fakeNode,
+        createElement: fakeNode,
+    };
+    const { PluginManager } = loadPluginClass(new MemoryStorage(), { document });
+    const manager = Object.create(PluginManager.prototype);
+    manager._statusNode = fakeNode();
+    manager._titleNode = fakeNode();
+    manager._status = {
+        title: 'Updating',
+        total: 2,
+        done: 2,
+        final: false,
+        verb: 'Updating',
+        verbDone: 'Updated',
+        finalTitle: '',
+        items: [
+            { name: 'Freshly Updated', state: 'done', from: '1.0.0', to: '1.1.0', updated: true },
+            { name: 'Already Current', state: 'done', version: '1.0.0' },
+        ],
+    };
+
+    manager._renderStatus();
+    const body = manager._statusNode.children[0];
+    const bar = body.children[0];
+
+    // The updated plugin's cell is green; the untouched one is left alone.
+    assert.equal(bar.children[0].style.color, 'var(--logo-color, #04d1ab)');
+    assert.equal(bar.children[1].style.color, undefined);
+
+    // Same split for the row mark + text.
+    const updatedRow = body.children[1];
+    const plainRow = body.children[2];
+    assert.equal(updatedRow.children[0].style.color, 'var(--logo-color, #04d1ab)');
+    assert.equal(updatedRow.children[1].style.color, 'var(--logo-color, #04d1ab)');
+    assert.equal(plainRow.children[0].style.color, undefined);
+    assert.equal(plainRow.children[1].style.color, undefined);
+});
+
+test('seeding the apply phase from a prior check keeps the full list, only resetting rows being updated', () => {
+    const { PluginManager } = loadPluginClass();
+    const manager = Object.create(PluginManager.prototype);
+    // A completed check phase left the toast showing all three candidates.
+    manager._status = {
+        items: [
+            { guid: 'g1', name: 'Alpha', state: 'done', version: '1.0.0' },
+            { guid: 'g2', name: 'Beta', state: 'done', version: '2.0.0' },
+            { guid: 'g3', name: 'Gamma', state: 'done', version: '3.0.0' },
+        ],
+    };
+
+    const fakePlugin = (guid, name, version) => ({
+        getGuid: () => guid,
+        getExistingCodeAndConfig: () => ({ json: { name, version } }),
+    });
+    // Only Beta has an update available.
+    const pluginsToUpdate = [fakePlugin('g2', 'Beta', '2.0.0')];
+    const availableUpdates = { g2: { version: '2.1.0' } };
+
+    const items = manager._seedUpdateItems(pluginsToUpdate, availableUpdates);
+
+    assert.equal(items.length, 3);
+    assert.equal(items[0].guid, 'g1');
+    assert.equal(items[0].state, 'done');
+    assert.equal(items[2].guid, 'g3');
+    assert.equal(items[2].state, 'done');
+    assert.equal(items[1].guid, 'g2');
+    assert.equal(items[1].state, 'pending');
+    assert.equal(items[1].from, '2.0.0');
+    assert.equal(items[1].to, '2.1.0');
+
+    assert.equal(manager._rowIndexByGuid.get('g2'), 1);
 });
 
 test('final status auto-dismisses after five idle seconds and keeps the requested title', () => {

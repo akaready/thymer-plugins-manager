@@ -1,5 +1,5 @@
 // Fallback only — the live value is read from the plugin's own config at load.
-const PM_VERSION = '1.23.7';
+const PM_VERSION = '1.24.0';
 const MANAGER_SETTINGS_RECOVERY_KEY = 'pm_manager_settings_recovery';
 const PM_UP_TO_DATE_TITLE = 'Everything up to date!';
 const PM_STATUS_TOAST_IDLE_MS = 5000;
@@ -301,6 +301,7 @@ class Plugin extends AppPlugin {
                     done: 0,
                     finalTitle: '',
                     items: candidates.map(c => ({
+                        guid: c.p.getGuid(),
                         name: c.json.name || 'Unnamed Plugin',
                         version: c.json.version || c.json.ver || '?',
                         state: 'pending',
@@ -4594,12 +4595,17 @@ class Plugin extends AppPlugin {
         if (s.total > 0) {
             // One cell per plugin — the bar IS the plugin count, so it reads as a tally rather
             // than an abstract percentage. Bigger than body text on purpose: it is the run's
-            // headline gauge. A cell fills exactly when its matching row becomes opaque.
-            const filled = Math.max(0, Math.min(s.total, s.items.filter(isRevealed).length));
-            const cells = '▰'.repeat(filled) + '▱'.repeat(s.total - filled);
+            // headline gauge. A cell fills exactly when its matching row becomes opaque, and
+            // colors Thymer-green exactly when that plugin was actually updated (not merely
+            // checked) — so the bar reads as a per-plugin outcome, not just a count.
             const bar = document.createElement('div');
-            bar.textContent = cells;
             bar.style.cssText = 'font-size:1.45em;letter-spacing:2px;line-height:1.2;margin-bottom:6px';
+            for (const it of s.items) {
+                const cell = document.createElement('span');
+                cell.textContent = isRevealed(it) ? '▰' : '▱';
+                if (it.updated) cell.style.color = 'var(--logo-color, #04d1ab)';
+                bar.appendChild(cell);
+            }
             body.appendChild(bar);
 
             const ok = s.items.filter(it => it.state === 'done').length;
@@ -4635,6 +4641,12 @@ class Plugin extends AppPlugin {
             const ver = it.to ? `v${it.from || '?'} → v${it.to}` : (it.version ? `v${it.version}` : '');
             const textEl = document.createElement('span');
             textEl.textContent = `${it.name}${ver ? ' — ' + ver : ''}`;
+            // A plugin that was actually updated (not merely checked) gets Thymer-green, so
+            // it reads at a glance against rows that were already up to date.
+            if (it.updated) {
+                markEl.style.color = 'var(--logo-color, #04d1ab)';
+                textEl.style.color = 'var(--logo-color, #04d1ab)';
+            }
             row.append(markEl, textEl);
             body.appendChild(row);
         }
@@ -4737,6 +4749,46 @@ class Plugin extends AppPlugin {
     }
 
     /**
+     * Seed (or extend) the live toast's item list for the apply phase.
+     *
+     * If a check phase already populated `_status.items` with the FULL candidate list (the
+     * "Update all Installed Plugins" command chains check -> apply on one toast), that list is
+     * carried forward and only the rows for `pluginsToUpdate` are reset to pending — a plugin
+     * that was already up to date stays visible in place rather than disappearing when the
+     * toast moves from checking to updating. With no prior list, seeds one row per plugin being
+     * updated, as before.
+     *
+     * Also rebuilds `_rowIndexByGuid` (guid -> row index) so the apply loop can settle the
+     * right row even though it's no longer guaranteed to walk `items` 1:1 with `pluginsToUpdate`.
+     */
+    _seedUpdateItems(pluginsToUpdate, availableUpdates) {
+        const priorItems = (this._status && Array.isArray(this._status.items) && this._status.items.length)
+            ? this._status.items
+            : null;
+        const seedRow = p => {
+            let name = 'Unknown';
+            let from = '?';
+            try {
+                const json = p.getExistingCodeAndConfig().json;
+                name = json.name || name;
+                from = json.version || json.ver || '?';
+            } catch (e) { }
+            const to = (availableUpdates[p.getGuid()] || {}).version || '?';
+            return { guid: p.getGuid(), name, from, to, state: 'pending' };
+        };
+
+        const items = priorItems
+            ? priorItems.map(it => {
+                const p = pluginsToUpdate.find(p => p.getGuid() === it.guid);
+                return p ? Object.assign({}, it, seedRow(p)) : it;
+            })
+            : pluginsToUpdate.map(seedRow);
+
+        this._rowIndexByGuid = new Map(items.map((it, idx) => [it.guid, idx]));
+        return items;
+    }
+
+    /**
      * Apply every update already in the cache. Works with OR without the panel — the
      * command-palette command runs it headless, so nothing here may assume panel DOM exists.
      *
@@ -4813,29 +4865,18 @@ class Plugin extends AppPlugin {
 
         if (notify) {
             // Same toast, second act: the bar and rows are seeded pending. Rows settle in place
-            // as the loop walks them.
-            //
-            // Both versions are known up front — the installed one from the plugin's own config,
-            // the target one from the update cache — so a row that FAILS can still report the
-            // version it failed to reach, even if it blew up before the fetch.
+            // as the loop walks them. Both versions are known up front — the installed one from
+            // the plugin's own config, the target one from the update cache — so a row that
+            // FAILS can still report the version it failed to reach, even if it blew up before
+            // the fetch. See _seedUpdateItems for how the row list itself is built.
+            const items = this._seedUpdateItems(pluginsToUpdate, availableUpdates);
             this._setStatus({
                 title: 'Updating…',
                 verb: 'Updating', verbDone: 'Updated',
                 finalTitle: '',
-                total: pluginsToUpdate.length,
+                total: items.length,
                 done: 0,
-                items: pluginsToUpdate.map(p => {
-                    let name = 'Unknown';
-                    let from = '?';
-                    try {
-                        const json = p.getExistingCodeAndConfig().json;
-                        name = json.name || name;
-                        from = json.version || json.ver || '?';
-                    } catch (e) { }
-                    let to = '?';
-                    try { to = (availableUpdates[p.getGuid()] || {}).version || '?'; } catch (e) { }
-                    return { name, from, to, state: 'pending' };
-                }),
+                items,
             });
         }
 
@@ -4851,8 +4892,9 @@ class Plugin extends AppPlugin {
 
         for (let i = 0; i < pluginsToUpdate.length; i++) {
             const p = pluginsToUpdate[i];
+            const rowIndex = notify ? this._rowIndexByGuid.get(p.getGuid()) : -1;
             busy.progress(`Updating… (${i + 1}/${total})`);
-            if (notify) this._markStatusItem(i, 'active');
+            if (notify) this._markStatusItem(rowIndex, 'active');
             try {
                 const conf = p.getExistingCodeAndConfig().json;
                 const sourceRepo = conf.__source_repo;
@@ -4880,9 +4922,10 @@ class Plugin extends AppPlugin {
                     // success and clear the cache BEFORE the save, then save last.
                     successCount++;
                     if (notify) {
-                        this._markStatusItem(i, 'done', {
+                        this._markStatusItem(rowIndex, 'done', {
                             from: conf.version || conf.ver || '?',
                             to: remoteJson.version || remoteJson.ver || '?',
+                            updated: true,
                         });
                     }
                     delete availableUpdates[p.getGuid()];
@@ -4916,7 +4959,7 @@ class Plugin extends AppPlugin {
 
                         // Settles this row in the live toast: traveling dot → ✓ with the version delta.
                         // No new toast, so nothing stacks and nothing is replaced.
-                        this._markStatusItem(i, 'done', { from: fromV, to: toV });
+                        this._markStatusItem(rowIndex, 'done', { from: fromV, to: toV, updated: true });
                     }
                 }
             } catch (e) {
@@ -4925,7 +4968,7 @@ class Plugin extends AppPlugin {
                     const conf = p.getExistingCodeAndConfig().json;
                     failedNames.push(conf.name || 'Unknown');
                 } catch (e) { failedNames.push(p.getGuid()); }
-                if (notify) this._markStatusItem(i, 'failed');
+                if (notify) this._markStatusItem(rowIndex, 'failed');
             }
         }
 
