@@ -1,5 +1,6 @@
 // Fallback only — the live value is read from the plugin's own config at load.
-const PM_VERSION = '1.23.6';
+const PM_VERSION = '1.23.7';
+const MANAGER_SETTINGS_RECOVERY_KEY = 'pm_manager_settings_recovery';
 const PM_UP_TO_DATE_TITLE = 'Everything up to date!';
 const PM_STATUS_TOAST_IDLE_MS = 5000;
 
@@ -24,6 +25,11 @@ class Plugin extends AppPlugin {
     onLoad() {
         // We load PAT from plugin configuration, removing from cleartext localstorage if found
         const conf = this.getConfiguration();
+        let pendingManagerSettings = {};
+        try {
+            const parsed = JSON.parse(localStorage.getItem(MANAGER_SETTINGS_RECOVERY_KEY) || '{}');
+            if (parsed && typeof parsed === 'object') pendingManagerSettings = parsed;
+        } catch (e) { }
         this.githubPat = conf?.custom?.githubPat || '';
         // Our own version + repo, for the header badge.
         this._selfVersion = conf?.version || conf?.custom?.pluginVersion || PM_VERSION;
@@ -31,7 +37,9 @@ class Plugin extends AppPlugin {
         this._selfIcon = conf?.icon || 'box';
         if (localStorage.getItem('pm_github_pat')) localStorage.removeItem('pm_github_pat');
         if (localStorage.getItem('pm_github_pat_persistent')) localStorage.removeItem('pm_github_pat_persistent');
-        this.communityRepos = conf?.custom?.community_repos || localStorage.getItem('pm_community_repos') || 'https://raw.githubusercontent.com/ed-nico/awesome-thymer/main/README.md';
+        this.communityRepos = Object.prototype.hasOwnProperty.call(pendingManagerSettings, 'community_repos')
+            ? pendingManagerSettings.community_repos
+            : (conf?.custom?.community_repos || localStorage.getItem('pm_community_repos') || 'https://raw.githubusercontent.com/ed-nico/awesome-thymer/main/README.md');
         this._updateIntervalId = null;
         this._activeModals = []; // track all open modals for cleanup on unload
         try { this._disabledPlugins = JSON.parse(localStorage.getItem('pm_disabled_plugins') || '{}'); } catch (e) { this._disabledPlugins = {}; }
@@ -56,7 +64,7 @@ class Plugin extends AppPlugin {
                 delete this._incompatiblePlugins[k];
         });
         localStorage.setItem('pm_incompatible', JSON.stringify(this._incompatiblePlugins));
-        let savedThemes = conf?.custom?.saved_themes;
+        let savedThemes = pendingManagerSettings.saved_themes || conf?.custom?.saved_themes;
 
         if (!savedThemes) {
             const oldThemesRaw = localStorage.getItem('pm_saved_themes');
@@ -73,7 +81,9 @@ class Plugin extends AppPlugin {
         }
 
         this._savedThemes = savedThemes || [];
-        this._autoExportEnabled = typeof conf?.custom?.auto_export_enabled === 'boolean'
+        this._autoExportEnabled = typeof pendingManagerSettings.auto_export_enabled === 'boolean'
+            ? pendingManagerSettings.auto_export_enabled
+            : typeof conf?.custom?.auto_export_enabled === 'boolean'
             ? conf.custom.auto_export_enabled
             : localStorage.getItem('pm_auto_export') === 'true';
         this._autoExportDirHandle = null;
@@ -82,6 +92,19 @@ class Plugin extends AppPlugin {
         this._autoExportCaps = this._detectAutoExportCaps();
         // Restore directory handle from IndexedDB (browser File System Access API)
         this._restoreAutoExportHandle();
+
+        // A prior config save may have failed after the UI accepted the edit.
+        // Re-apply the non-secret recovery journal; it is removed only after a
+        // confirmed save. PATs deliberately never enter localStorage.
+        if (Object.keys(pendingManagerSettings).length) {
+            setTimeout(() => {
+                void this._saveManagerSettings({
+                    communityRepos: pendingManagerSettings.community_repos,
+                    savedThemes: pendingManagerSettings.saved_themes,
+                    autoExportEnabled: pendingManagerSettings.auto_export_enabled,
+                });
+            }, 1000);
+        }
 
         // One-time migration: normalize pm_updates_available entries to {name, version}
         try {
@@ -814,10 +837,11 @@ class Plugin extends AppPlugin {
             const pat = container.querySelector('#pm-pat-input').value.trim();
             const repos = container.querySelector('#pm-repos-input').value.trim();
             const autoExport = container.querySelector('#pm-auto-export-toggle').checked;
-            await this._saveManagerSettings({ githubPat: pat, communityRepos: repos, autoExportEnabled: autoExport });
-            this._renderWorkspaceSummary(container);
-
-            this.ui.addToaster({ title: "Settings Saved", dismissible: true, autoDestroyTime: 3000 });
+            const saved = await this._saveManagerSettings({ githubPat: pat, communityRepos: repos, autoExportEnabled: autoExport });
+            if (saved) {
+                this._renderWorkspaceSummary(container);
+                this.ui.addToaster({ title: "Settings Saved", dismissible: true, autoDestroyTime: 3000 });
+            }
         });
 
         // Auto-export directory / destination picker (adapts to environment)
@@ -949,35 +973,73 @@ class Plugin extends AppPlugin {
         const conf = this.getConfiguration();
         if (!conf.custom) conf.custom = {};
 
-        if (overrides.githubPat !== undefined) {
-            this.githubPat = overrides.githubPat;
-            conf.custom.githubPat = overrides.githubPat;
+        let pending = {};
+        try {
+            const parsed = JSON.parse(localStorage.getItem(MANAGER_SETTINGS_RECOVERY_KEY) || '{}');
+            if (parsed && typeof parsed === 'object') pending = parsed;
+        } catch (e) { }
+        const effective = {
+            ...overrides,
+            communityRepos: overrides.communityRepos !== undefined ? overrides.communityRepos : pending.community_repos,
+            savedThemes: overrides.savedThemes !== undefined ? overrides.savedThemes : pending.saved_themes,
+            autoExportEnabled: overrides.autoExportEnabled !== undefined ? overrides.autoExportEnabled : pending.auto_export_enabled,
+        };
+
+        if (effective.githubPat !== undefined) {
+            this.githubPat = effective.githubPat;
+            conf.custom.githubPat = effective.githubPat;
             localStorage.removeItem('pm_github_pat_persistent');
         }
-        if (overrides.communityRepos !== undefined) {
-            this.communityRepos = overrides.communityRepos;
-            conf.custom.community_repos = overrides.communityRepos;
-            localStorage.setItem('pm_community_repos', overrides.communityRepos);
+        if (effective.communityRepos !== undefined) {
+            this.communityRepos = effective.communityRepos;
+            conf.custom.community_repos = effective.communityRepos;
+            localStorage.setItem('pm_community_repos', effective.communityRepos);
         }
-        if (overrides.savedThemes !== undefined) {
-            this._savedThemes = this._cloneJsonValue(Array.isArray(overrides.savedThemes) ? overrides.savedThemes : []);
+        if (effective.savedThemes !== undefined) {
+            this._savedThemes = this._cloneJsonValue(Array.isArray(effective.savedThemes) ? effective.savedThemes : []);
             conf.custom.saved_themes = this._savedThemes;
         }
-        if (overrides.autoExportEnabled !== undefined) {
-            this._autoExportEnabled = !!overrides.autoExportEnabled;
-            conf.custom.auto_export_enabled = !!overrides.autoExportEnabled;
+        if (effective.autoExportEnabled !== undefined) {
+            this._autoExportEnabled = !!effective.autoExportEnabled;
+            conf.custom.auto_export_enabled = !!effective.autoExportEnabled;
             localStorage.setItem('pm_auto_export', this._autoExportEnabled ? 'true' : 'false');
+        }
+
+        const recovery = {};
+        if (effective.communityRepos !== undefined) recovery.community_repos = effective.communityRepos;
+        if (effective.savedThemes !== undefined) recovery.saved_themes = this._cloneJsonValue(this._savedThemes);
+        if (effective.autoExportEnabled !== undefined) recovery.auto_export_enabled = this._autoExportEnabled;
+        if (Object.keys(recovery).length) {
+            try {
+                const serialized = JSON.stringify(recovery);
+                localStorage.setItem(MANAGER_SETTINGS_RECOVERY_KEY, serialized);
+                if (localStorage.getItem(MANAGER_SETTINGS_RECOVERY_KEY) !== serialized) {
+                    throw new Error('Local storage did not retain the recovery journal.');
+                }
+            } catch (e) {
+                console.warn('[Plugins Manager] Failed to create settings recovery journal:', e);
+                try { this.ui.addToaster({ title: 'Settings not saved', message: 'Plugins Manager could not create a recovery copy.', dismissible: true, autoDestroyTime: 5000 }); } catch (toastErr) { }
+                return false;
+            }
         }
 
         try {
             const plugin = this.data.getPluginByGuid(this.getGuid());
+            let result;
             if (plugin) {
-                await plugin.saveConfiguration(conf);
+                result = await plugin.saveConfiguration(conf);
             } else if (typeof this.saveConfiguration === 'function') {
-                await this.saveConfiguration(conf);
+                result = await this.saveConfiguration(conf);
+            } else {
+                throw new Error('No writable Plugins Manager config handle.');
             }
+            if (result === false) throw new Error('Thymer rejected the config save.');
+            localStorage.removeItem(MANAGER_SETTINGS_RECOVERY_KEY);
+            return true;
         } catch (e) {
             console.warn('[Plugins Manager] Failed to persist manager settings:', e);
+            try { this.ui.addToaster({ title: 'Settings not saved yet', message: 'Plugins Manager kept a recovery copy and will retry.', dismissible: true, autoDestroyTime: 5000 }); } catch (toastErr) { }
+            return false;
         }
     }
 
@@ -1635,7 +1697,11 @@ class Plugin extends AppPlugin {
     }
 
     _saveDisabledPlugins() {
-        localStorage.setItem('pm_disabled_plugins', JSON.stringify(this._disabledPlugins || {}));
+        const serialized = JSON.stringify(this._disabledPlugins || {});
+        localStorage.setItem('pm_disabled_plugins', serialized);
+        if (localStorage.getItem('pm_disabled_plugins') !== serialized) {
+            throw new Error('Could not verify the disabled-plugin settings backup. Nothing was removed; free browser storage and try again.');
+        }
     }
 
     _savePluginColors() {
@@ -1788,6 +1854,13 @@ class Plugin extends AppPlugin {
     // repo, so we stash their actual code + CSS + config to reinstall from. Throws on failure.
     // Shared by the single-card toggle and the bulk "All Off" / Safe Mode paths.
     async _disablePluginCore(pluginObj, conf) {
+        // Re-read at the destructive boundary. List cards can outlive a plugin's
+        // last settings save; the live container is the only snapshot we are
+        // willing to back up before trashing it.
+        try {
+            const live = pluginObj.getExistingCodeAndConfig();
+            if (live && live.json) conf = live.json;
+        } catch (e) { }
         const guid = pluginObj.getGuid();
         const sourceRepo = conf.__source_repo || '';
         // Map key: repo for GitHub plugins (stable across guid churn), else a local guid key.
@@ -1821,9 +1894,12 @@ class Plugin extends AppPlugin {
         }
 
         this._disabledPlugins[key] = entry;
+        // Verified write: if storage is blocked, full, or silently no-ops, abort
+        // before trashPlugin. A plugin is never removed without a readable backup.
         this._saveDisabledPlugins();
 
-        await pluginObj.trashPlugin();
+        const trashed = await pluginObj.trashPlugin();
+        if (trashed === false) throw new Error(`Thymer refused to disable ${entry.name}; its settings backup was kept.`);
     }
 
     // Confirm-free core: reinstall a disabled plugin. GitHub plugins re-fetch from their repo;
@@ -1832,24 +1908,39 @@ class Plugin extends AppPlugin {
     async _enableDisabledPluginCore(disabledPlugin) {
         const key = disabledPlugin.key || disabledPlugin.sourceRepo;
         let name;
+        let installedPlugin;
 
         if (disabledPlugin.sourceRepo) {
             const { json, js, css } = await this.fetchGithubRepo(disabledPlugin.sourceRepo, { sourceFiles: disabledPlugin.sourceFiles });
             const hasRestoredCustom = disabledPlugin.custom !== undefined;
             if (hasRestoredCustom) json.custom = this._cloneJsonValue(disabledPlugin.custom);
-            await this.installPlugin(json, js, { interactive: false, cssCode: css, allowRestoredCustom: hasRestoredCustom });
+            installedPlugin = await this.installPlugin(json, js, { interactive: false, cssCode: css, allowRestoredCustom: hasRestoredCustom });
             name = json.name || disabledPlugin.name;
         } else {
             // Local plugin: reinstall from the stash (no network).
             const json = this._cloneJsonValue(disabledPlugin.json) || {};
             const hasRestoredCustom = disabledPlugin.custom !== undefined;
             if (hasRestoredCustom) json.custom = this._cloneJsonValue(disabledPlugin.custom);
-            await this.installPlugin(json, disabledPlugin.code || '', { interactive: false, cssCode: disabledPlugin.css || '', allowRestoredCustom: hasRestoredCustom });
+            installedPlugin = await this.installPlugin(json, disabledPlugin.code || '', { interactive: false, cssCode: disabledPlugin.css || '', allowRestoredCustom: hasRestoredCustom });
             name = (json && json.name) || disabledPlugin.name;
         }
 
-        delete this._disabledPlugins[key];
-        this._saveDisabledPlugins();
+        if (disabledPlugin.custom !== undefined) {
+            this._assertRestoredCustom(installedPlugin, disabledPlugin.custom, name);
+        }
+
+        // Delete the backup only after the reinstalled container has been read
+        // back and its custom settings match semantically.
+        const previous = this._disabledPlugins;
+        const next = { ...previous };
+        delete next[key];
+        this._disabledPlugins = next;
+        try {
+            this._saveDisabledPlugins();
+        } catch (e) {
+            this._disabledPlugins = previous;
+            throw e;
+        }
         return name;
     }
 
@@ -3739,6 +3830,25 @@ class Plugin extends AppPlugin {
         return JSON.parse(JSON.stringify(value));
     }
 
+    _stableJson(value) {
+        if (Array.isArray(value)) return '[' + value.map((item) => this._stableJson(item)).join(',') + ']';
+        if (value && typeof value === 'object') {
+            return '{' + Object.keys(value).sort().map((key) => JSON.stringify(key) + ':' + this._stableJson(value[key])).join(',') + '}';
+        }
+        return JSON.stringify(value);
+    }
+
+    _assertRestoredCustom(pluginObj, expected, name) {
+        let conf = null;
+        try {
+            const existing = pluginObj && pluginObj.getExistingCodeAndConfig ? pluginObj.getExistingCodeAndConfig() : null;
+            conf = existing && existing.json ? existing.json : (pluginObj && pluginObj.getConfiguration ? pluginObj.getConfiguration() : null);
+        } catch (e) { }
+        if (!conf || this._stableJson(conf.custom) !== this._stableJson(expected)) {
+            throw new Error(`${name || 'Plugin'} was reinstalled, but its settings could not be verified. The backup was kept; do not delete the disabled entry.`);
+        }
+    }
+
     /** Validate JS code is compatible with Thymer's runtime before saving */
     _validatePluginJS(name, jsCode) {
         if (!jsCode) return;
@@ -4281,7 +4391,7 @@ class Plugin extends AppPlugin {
             allowCustom: trustedConfig || allowRestoredCustom,
             preserveUnknownKeys: trustedConfig,
         });
-        if (existingConf && existingConf.custom !== undefined && (!trustedConfig || jsonConf.custom === undefined)) {
+        if (existingConf && existingConf.custom !== undefined && !allowRestoredCustom && (!trustedConfig || jsonConf.custom === undefined)) {
             sanitizedConf.custom = this._cloneJsonValue(existingConf.custom);
         }
         this._ensurePluginIdentity(sanitizedConf, existingConf);

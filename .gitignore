@@ -5,4 +5,5 @@
 !plugin.js
 !plugin.json
 !plugin.css
+!plugin-manager-settings.test.cjs
 !.gitignore
