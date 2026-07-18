@@ -1,5 +1,5 @@
 // Fallback only — the live value is read from the plugin's own config at load.
-const PM_VERSION = '1.23.5';
+const PM_VERSION = '1.23.6';
 const PM_UP_TO_DATE_TITLE = 'Everything up to date!';
 const PM_STATUS_TOAST_IDLE_MS = 5000;
 
@@ -1835,14 +1835,16 @@ class Plugin extends AppPlugin {
 
         if (disabledPlugin.sourceRepo) {
             const { json, js, css } = await this.fetchGithubRepo(disabledPlugin.sourceRepo, { sourceFiles: disabledPlugin.sourceFiles });
-            if (disabledPlugin.custom !== undefined) json.custom = this._cloneJsonValue(disabledPlugin.custom);
-            await this.installPlugin(json, js, { interactive: false, cssCode: css });
+            const hasRestoredCustom = disabledPlugin.custom !== undefined;
+            if (hasRestoredCustom) json.custom = this._cloneJsonValue(disabledPlugin.custom);
+            await this.installPlugin(json, js, { interactive: false, cssCode: css, allowRestoredCustom: hasRestoredCustom });
             name = json.name || disabledPlugin.name;
         } else {
             // Local plugin: reinstall from the stash (no network).
             const json = this._cloneJsonValue(disabledPlugin.json) || {};
-            if (disabledPlugin.custom !== undefined) json.custom = this._cloneJsonValue(disabledPlugin.custom);
-            await this.installPlugin(json, disabledPlugin.code || '', { interactive: false, cssCode: disabledPlugin.css || '' });
+            const hasRestoredCustom = disabledPlugin.custom !== undefined;
+            if (hasRestoredCustom) json.custom = this._cloneJsonValue(disabledPlugin.custom);
+            await this.installPlugin(json, disabledPlugin.code || '', { interactive: false, cssCode: disabledPlugin.css || '', allowRestoredCustom: hasRestoredCustom });
             name = (json && json.name) || disabledPlugin.name;
         }
 
@@ -4207,7 +4209,7 @@ class Plugin extends AppPlugin {
         }
     }
 
-    async installPlugin(jsonConf, jsCode, { interactive = true, cssCode = null, trustedConfig = false } = {}) {
+    async installPlugin(jsonConf, jsCode, { interactive = true, cssCode = null, trustedConfig = false, allowRestoredCustom = false } = {}) {
         // Skip the Plugins Manager itself — it doesn't need to be reinstalled
         const name = (jsonConf.name || '').toLowerCase();
         if (name === 'plugins manager') {
@@ -4272,7 +4274,13 @@ class Plugin extends AppPlugin {
         this._validatePluginJS(jsonConf.name, jsCode);
 
         // Security: sanitize config to only keep expected fields
-        const sanitizedConf = this._sanitizePluginConfig(jsonConf, { allowCustom: trustedConfig, preserveUnknownKeys: trustedConfig });
+        // A disabled-plugin restore may carry the exact `custom` blob we stashed from its prior
+        // install. Let only that blob back through; unlike trusted backup imports, this does NOT
+        // bypass the top-level config whitelist for newly fetched repository data.
+        const sanitizedConf = this._sanitizePluginConfig(jsonConf, {
+            allowCustom: trustedConfig || allowRestoredCustom,
+            preserveUnknownKeys: trustedConfig,
+        });
         if (existingConf && existingConf.custom !== undefined && (!trustedConfig || jsonConf.custom === undefined)) {
             sanitizedConf.custom = this._cloneJsonValue(existingConf.custom);
         }
