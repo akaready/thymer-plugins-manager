@@ -1807,13 +1807,13 @@ class Plugin extends AppPlugin {
         if (disabledPlugin.sourceRepo) {
             const { json, js, css } = await this.fetchGithubRepo(disabledPlugin.sourceRepo, { sourceFiles: disabledPlugin.sourceFiles });
             if (disabledPlugin.custom !== undefined) json.custom = this._cloneJsonValue(disabledPlugin.custom);
-            await this.installPlugin(json, js, { interactive: false, cssCode: css });
+            await this.installPlugin(json, js, { interactive: false, cssCode: css, allowCustom: true });
             name = json.name || disabledPlugin.name;
         } else {
             // Local plugin: reinstall from the stash (no network).
             const json = this._cloneJsonValue(disabledPlugin.json) || {};
             if (disabledPlugin.custom !== undefined) json.custom = this._cloneJsonValue(disabledPlugin.custom);
-            await this.installPlugin(json, disabledPlugin.code || '', { interactive: false, cssCode: disabledPlugin.css || '' });
+            await this.installPlugin(json, disabledPlugin.code || '', { interactive: false, cssCode: disabledPlugin.css || '', allowCustom: true });
             name = (json && json.name) || disabledPlugin.name;
         }
 
@@ -4151,7 +4151,7 @@ class Plugin extends AppPlugin {
         }
     }
 
-    async installPlugin(jsonConf, jsCode, { interactive = true, cssCode = null, trustedConfig = false } = {}) {
+    async installPlugin(jsonConf, jsCode, { interactive = true, cssCode = null, trustedConfig = false, allowCustom = false } = {}) {
         // Skip the Plugins Manager itself — it doesn't need to be reinstalled
         const name = (jsonConf.name || '').toLowerCase();
         if (name === 'plugins manager') {
@@ -4221,7 +4221,7 @@ class Plugin extends AppPlugin {
         this._validatePluginJS(jsonConf.name, jsCode);
 
         // Security: sanitize config to only keep expected fields
-        const sanitizedConf = this._sanitizePluginConfig(jsonConf, { allowCustom: trustedConfig, preserveUnknownKeys: trustedConfig });
+        const sanitizedConf = this._sanitizePluginConfig(jsonConf, { allowCustom: trustedConfig || allowCustom, preserveUnknownKeys: trustedConfig });
         if (existingConf && existingConf.custom !== undefined && (!trustedConfig || jsonConf.custom === undefined)) {
             sanitizedConf.custom = this._cloneJsonValue(existingConf.custom);
         }
