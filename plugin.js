@@ -71,15 +71,11 @@ class Plugin extends AppPlugin {
         }
 
         this._savedThemes = savedThemes || [];
-        this._autoExportEnabled = typeof conf?.custom?.auto_export_enabled === 'boolean'
-            ? conf.custom.auto_export_enabled
-            : localStorage.getItem('pm_auto_export') === 'true';
-        this._autoExportDirHandle = null;
-        this._autoExportDirName = localStorage.getItem('pm_auto_export_dir_name') || '';
-        this._autoExportMode = localStorage.getItem('pm_auto_export_mode') || ''; // 'fsaccess' | 'download' | ''
-        this._autoExportCaps = this._detectAutoExportCaps();
-        // Restore directory handle from IndexedDB (browser File System Access API)
-        this._restoreAutoExportHandle();
+        // GitHub backup — backups are always on and always go to GitHub.
+        // Config (synced) holds the repo/branch/path; the PAT authenticates.
+        this._ghBackupRepo = (conf?.custom?.gh_backup_repo || '').trim();
+        this._ghBackupBranch = (conf?.custom?.gh_backup_branch || 'main').trim() || 'main';
+        this._ghBackupPath = (conf?.custom?.gh_backup_path || '').trim() || 'thymer-workspace-backup.json';
 
         // One-time migration: normalize pm_updates_available entries to {name, version}
         try {
@@ -267,7 +263,7 @@ class Plugin extends AppPlugin {
                     if (repo && this._isValidGithubUrl(repo)) {
                         checkCount++;
                         const { json: remoteJson } = await this.fetchGithubRepo(repo, { sourceFiles: json.__source_files });
-                        if (remoteJson.version && remoteJson.version !== json.version) {
+                        if (this._isRemoteVersionNewer(remoteJson.version, json.version)) {
                             updatesAvailable[p.getGuid()] = {
                                 name: json.name || "Unnamed Plugin",
                                 version: remoteJson.version
@@ -364,6 +360,28 @@ class Plugin extends AppPlugin {
         try { localStorage.setItem('pm_updates_available', JSON.stringify(cache)); } catch (e) { }
     }
 
+    /**
+     * True only if `remote` is strictly newer than `installed`.
+     *
+     * Compares numeric segments in order ("1.6.1-fork.5" -> 1,6,1,5); a missing
+     * segment counts as 0. Pairs whose numbers tie but whose strings differ
+     * (e.g. "1.0-beta" vs "1.0-rc") are NOT reported as updates: offering a
+     * same-or-older remote would silently overwrite newer local code. The
+     * Reinstall button remains the explicit way to force any overwrite.
+     */
+    _isRemoteVersionNewer(remote, installed) {
+        if (!remote) return false;
+        if (!installed) return true;
+        if (remote === installed) return false;
+        const nums = v => (String(v).match(/\d+/g) || []).map(Number);
+        const a = nums(remote), b = nums(installed);
+        for (let i = 0; i < Math.max(a.length, b.length); i++) {
+            const x = a[i] || 0, y = b[i] || 0;
+            if (x !== y) return x > y;
+        }
+        return false;
+    }
+
     renderUI(panel) {
         const html = `
             <div class="pm-container">
@@ -398,8 +416,6 @@ class Plugin extends AppPlugin {
                     </div>
                     <div class="pm-drawer pm-hidden" id="pm-drawer-global">
                         <div class="pm-drawer-content">
-                            <button class="pm-btn" id="pm-import-global-btn">Restore Plugins</button>
-                            <button class="pm-btn" id="pm-export-global-btn">Backup Plugins</button>
                             <button class="pm-btn pm-btn-update" id="pm-check-updates-global-btn" title="Check for plugin updates"><span class="pm-btn-icon" aria-hidden="true">↻</span> Check Updates</button>
                             <button class="pm-btn pm-btn-update update-btn pm-hidden" id="pm-update-all-global-btn">Update All</button>
                             <button class="pm-btn pm-btn-alloff" id="pm-disable-all-global-btn" title="Turn off all plugins">All Off</button>
@@ -407,22 +423,26 @@ class Plugin extends AppPlugin {
                         </div>
                     </div>
                     <div class="pm-list-controls">
-                        <input type="text" id="pm-search-global" class="pm-input pm-search-input" placeholder="Search plugins…" autocomplete="off" />
-                        <select id="pm-sort-global" class="pm-input pm-select" aria-label="Sort plugins">
-                            <option value="name">Name (A–Z)</option>
-                            <option value="author">Author (A–Z)</option>
-                            <option value="color">Color</option>
-                            <option value="status">Active first</option>
-                        </select>
-                        <div class="pm-chips" id="pm-status-global" role="group" aria-label="Filter by status">
-                            <button type="button" class="pm-chip active" data-status="all">All</button>
-                            <button type="button" class="pm-chip" data-status="active">Active</button>
-                            <button type="button" class="pm-chip" data-status="inactive">Inactive</button>
+                        <div class="pm-list-controls-group">
+                            <input type="text" id="pm-search-global" class="pm-input pm-search-input" placeholder="Search plugins…" autocomplete="off" />
+                            <select id="pm-sort-global" class="pm-input pm-select" aria-label="Sort plugins">
+                                <option value="name">Name (A–Z)</option>
+                                <option value="author">Author (A–Z)</option>
+                                <option value="color">Color</option>
+                                <option value="status">Active first</option>
+                            </select>
                         </div>
-                        <div class="pm-color-filter pm-hidden" id="pm-colorfilter-global"></div>
-                        <div class="pm-seg-group" id="pm-view-global" role="group" aria-label="View mode">
-                            <button type="button" class="pm-seg active" data-view="grid" title="Grid view" aria-label="Grid view"></button>
-                            <button type="button" class="pm-seg" data-view="list" title="List view" aria-label="List view"></button>
+                        <div class="pm-list-controls-group">
+                            <div class="pm-chips" id="pm-status-global" role="group" aria-label="Filter by status">
+                                <button type="button" class="pm-chip active" data-status="all">All</button>
+                                <button type="button" class="pm-chip" data-status="active">Active</button>
+                                <button type="button" class="pm-chip" data-status="inactive">Inactive</button>
+                            </div>
+                            <div class="pm-color-filter pm-hidden" id="pm-colorfilter-global"></div>
+                            <div class="pm-seg-group" id="pm-view-global" role="group" aria-label="View mode">
+                                <button type="button" class="pm-seg active" data-view="grid" title="Grid view" aria-label="Grid view"></button>
+                                <button type="button" class="pm-seg" data-view="list" title="List view" aria-label="List view"></button>
+                            </div>
                         </div>
                     </div>
                     <div id="pm-global-list" class="pm-list-container">Loading...</div>
@@ -437,8 +457,6 @@ class Plugin extends AppPlugin {
                     </div>
                     <div class="pm-drawer pm-hidden" id="pm-drawer-col">
                         <div class="pm-drawer-content">
-                            <button class="pm-btn" id="pm-import-col-btn">Restore Collections</button>
-                            <button class="pm-btn" id="pm-export-col-btn">Backup Collections</button>
                             <button class="pm-btn pm-btn-update" id="pm-check-updates-col-btn" title="Check for collection updates"><span class="pm-btn-icon" aria-hidden="true">↻</span> Check Updates</button>
                             <button class="pm-btn pm-btn-update update-btn pm-hidden" id="pm-update-all-col-btn">Update All</button>
                             <button class="pm-btn pm-btn-alloff" id="pm-disable-all-col-btn" title="Turn off all collection plugins">All Off</button>
@@ -446,22 +464,26 @@ class Plugin extends AppPlugin {
                         </div>
                     </div>
                     <div class="pm-list-controls">
-                        <input type="text" id="pm-search-col" class="pm-input pm-search-input" placeholder="Search collection plugins…" autocomplete="off" />
-                        <select id="pm-sort-col" class="pm-input pm-select" aria-label="Sort collection plugins">
-                            <option value="name">Name (A–Z)</option>
-                            <option value="author">Author (A–Z)</option>
-                            <option value="color">Color</option>
-                            <option value="status">Active first</option>
-                        </select>
-                        <div class="pm-chips" id="pm-status-col" role="group" aria-label="Filter by status">
-                            <button type="button" class="pm-chip active" data-status="all">All</button>
-                            <button type="button" class="pm-chip" data-status="active">Active</button>
-                            <button type="button" class="pm-chip" data-status="inactive">Inactive</button>
+                        <div class="pm-list-controls-group">
+                            <input type="text" id="pm-search-col" class="pm-input pm-search-input" placeholder="Search collection plugins…" autocomplete="off" />
+                            <select id="pm-sort-col" class="pm-input pm-select" aria-label="Sort collection plugins">
+                                <option value="name">Name (A–Z)</option>
+                                <option value="author">Author (A–Z)</option>
+                                <option value="color">Color</option>
+                                <option value="status">Active first</option>
+                            </select>
                         </div>
-                        <div class="pm-color-filter pm-hidden" id="pm-colorfilter-col"></div>
-                        <div class="pm-seg-group" id="pm-view-col" role="group" aria-label="View mode">
-                            <button type="button" class="pm-seg active" data-view="grid" title="Grid view" aria-label="Grid view"></button>
-                            <button type="button" class="pm-seg" data-view="list" title="List view" aria-label="List view"></button>
+                        <div class="pm-list-controls-group">
+                            <div class="pm-chips" id="pm-status-col" role="group" aria-label="Filter by status">
+                                <button type="button" class="pm-chip active" data-status="all">All</button>
+                                <button type="button" class="pm-chip" data-status="active">Active</button>
+                                <button type="button" class="pm-chip" data-status="inactive">Inactive</button>
+                            </div>
+                            <div class="pm-color-filter pm-hidden" id="pm-colorfilter-col"></div>
+                            <div class="pm-seg-group" id="pm-view-col" role="group" aria-label="View mode">
+                                <button type="button" class="pm-seg active" data-view="grid" title="Grid view" aria-label="Grid view"></button>
+                                <button type="button" class="pm-seg" data-view="list" title="List view" aria-label="List view"></button>
+                            </div>
                         </div>
                     </div>
                     <div id="pm-collections-list" class="pm-list-container">Loading...</div>
@@ -500,7 +522,7 @@ class Plugin extends AppPlugin {
                             <button class="pm-btn" id="pm-add-theme-manual-btn">Paste CSS</button>
                         </div>
                         <div class="pm-tab-actions pm-tab-actions-secondary">
-                            <button class="pm-btn" id="pm-export-all-themes-btn">Backup Theme CSS</button>
+                            <button class="pm-btn" id="pm-export-all-themes-btn">Export CSS</button>
                         </div>
                     </div>
                     <div id="pm-themes-list" class="pm-list-container"></div>
@@ -509,17 +531,6 @@ class Plugin extends AppPlugin {
                 <div class="pm-tab-content" id="tab-settings">
                     <div class="pm-card pm-settings-card">
                         <form class="pm-settings-form" onsubmit="return false;">
-                            <div class="pm-settings-section">
-                                <h3>GitHub Access</h3>
-                                <div class="pm-input-group">
-                                <label>GitHub Personal Access Token (Optional)</label>
-                                <p class="pm-settings-help">
-                                    Provide a PAT to increase API rate limits when updating or restoring many plugins. It is stored only in this plugin's configuration.
-                                </p>
-                                <input type="password" id="pm-pat-input" class="pm-input" placeholder="ghp_xxxxxxxxxxxx" value="${this._escHtml(this.githubPat)}" autocomplete="off">
-                            </div>
-                            </div>
-                            
                             <div class="pm-settings-section">
                                 <h3>Community Sources</h3>
                                 <div class="pm-input-group pm-input-group-flush">
@@ -532,32 +543,43 @@ class Plugin extends AppPlugin {
                             </div>
 
                             <div class="pm-settings-section">
-                                <h3>Workspace Backup &amp; Restore</h3>
+                                <h3>GitHub Access</h3>
+                                <div class="pm-input-group">
+                                <label>GitHub Personal Access Token (Optional)</label>
                                 <p class="pm-settings-help">
-                                    Create a single backup for plugins, collections, theme library, and Plugins Manager settings, or restore that backup into a new workspace.
+                                    Provide a PAT to increase API rate limits when updating or restoring many plugins. It is stored only in this plugin's configuration.
                                 </p>
-                                <div class="pm-tab-actions pm-settings-actions">
-                                    <button type="button" class="pm-btn primary" id="pm-export-workspace-btn">Backup Workspace</button>
-                                    <button type="button" class="pm-btn" id="pm-import-workspace-btn">Restore Workspace</button>
-                                    <button type="button" class="pm-btn" id="pm-export-workspace-themes-btn">Backup Theme CSS</button>
-                                </div>
-                                <div id="pm-workspace-summary" class="pm-settings-summary"></div>
+                                <input type="password" id="pm-pat-input" class="pm-input" placeholder="ghp_xxxxxxxxxxxx" value="${this._escHtml(this.githubPat)}" autocomplete="off">
+                            </div>
                             </div>
 
                             <div class="pm-settings-section">
-                                <h3>Automatic Backups</h3>
-                                <label class="pm-checkbox-row">
-                                    <input type="checkbox" id="pm-auto-export-toggle" ${this._autoExportEnabled ? 'checked' : ''} />
-                                    Auto-Backup Workspace on Changes
-                                </label>
-                                <p class="pm-settings-help pm-settings-help-tight">
-                                    Automatically save a full workspace backup whenever plugins, collections, or themes change.
+                                <h3>GitHub Backup &amp; Restore</h3>
+                                <p class="pm-settings-help">
+                                    Backups are automatic: every plugin, collection, or theme change commits a full
+                                    workspace backup to the GitHub repository below. Restore pulls any version from
+                                    that commit history. Requires the PAT above to have read/write Contents permission.
+                                    Keep the repository private — backups contain full plugin configurations.
                                 </p>
-                                <div class="pm-inline-row">
-                                    <button type="button" class="pm-btn" id="pm-auto-export-dir-btn">${this._autoExportCaps.hasFSAccess ? 'Choose Directory' : 'Choose Destination'}</button>
-                                    <span id="pm-auto-export-dir-label" class="pm-settings-help pm-settings-help-flush">${this._escHtml(this._autoExportDestinationLabel())}</span>
+                                <div class="pm-input-group">
+                                    <label>Repository (owner/name)</label>
+                                    <input type="text" id="pm-gh-repo-input" class="pm-input" placeholder="user/thymer-backups" value="${this._escHtml(this._ghBackupRepo)}">
                                 </div>
-                                <p class="pm-settings-help pm-settings-hint" id="pm-auto-export-mode-help">${this._escHtml(this._autoExportModeHint())}</p>
+                                <div class="pm-inline-row">
+                                    <div class="pm-input-group pm-input-group-inline">
+                                        <label>Branch</label>
+                                        <input type="text" id="pm-gh-branch-input" class="pm-input" placeholder="main" value="${this._escHtml(this._ghBackupBranch)}">
+                                    </div>
+                                    <div class="pm-input-group pm-input-group-inline">
+                                        <label>File path</label>
+                                        <input type="text" id="pm-gh-path-input" class="pm-input" placeholder="thymer-workspace-backup.json" value="${this._escHtml(this._ghBackupPath)}">
+                                    </div>
+                                </div>
+                                <div class="pm-tab-actions pm-settings-actions">
+                                    <button type="button" class="pm-btn primary" id="pm-restore-github-btn">Restore from GitHub</button>
+                                    <button type="button" class="pm-btn" id="pm-export-workspace-themes-btn">Export CSS</button>
+                                </div>
+                                <div id="pm-workspace-summary" class="pm-settings-summary"></div>
                             </div>
 
                             <div class="pm-settings-footer">
@@ -784,16 +806,26 @@ class Plugin extends AppPlugin {
         container.querySelector('#pm-save-settings').addEventListener('click', async () => {
             const pat = container.querySelector('#pm-pat-input').value.trim();
             const repos = container.querySelector('#pm-repos-input').value.trim();
-            const autoExport = container.querySelector('#pm-auto-export-toggle').checked;
-            await this._saveManagerSettings({ githubPat: pat, communityRepos: repos, autoExportEnabled: autoExport });
+            const ghRepo = container.querySelector('#pm-gh-repo-input').value.trim();
+            const ghBranch = container.querySelector('#pm-gh-branch-input').value.trim();
+            const ghPath = container.querySelector('#pm-gh-path-input').value.trim();
+            await this._saveManagerSettings({ githubPat: pat, communityRepos: repos, ghBackupRepo: ghRepo, ghBackupBranch: ghBranch, ghBackupPath: ghPath });
             this._renderWorkspaceSummary(container);
 
             this.ui.addToaster({ title: "Settings Saved", dismissible: true, autoDestroyTime: 3000 });
         });
 
-        // Auto-export directory / destination picker (adapts to environment)
-        container.querySelector('#pm-auto-export-dir-btn').addEventListener('click', async () => {
-            await this._chooseAutoExportTarget(container);
+        // Restore workspace backup from GitHub: list commit history, pick a version, prefill import dialog
+        container.querySelector('#pm-restore-github-btn').addEventListener('click', async (ev) => {
+            const btn = ev.currentTarget;
+            try {
+                btn.disabled = true;
+                await this._showGithubRestorePicker(container);
+            } catch (e) {
+                this.ui.addToaster({ title: 'GitHub Restore Failed', message: e.message, autoDestroyTime: 6000, dismissible: true });
+            } finally {
+                btn.disabled = false;
+            }
         });
 
 
@@ -840,24 +872,18 @@ class Plugin extends AppPlugin {
 
         // Actions
         container.querySelector('#pm-install-global-btn').addEventListener('click', () => this.showInstallDialog(container, 'app'));
-        container.querySelector('#pm-import-global-btn').addEventListener('click', () => this.showImportDialog(container, 'app'));
-        container.querySelector('#pm-export-global-btn').addEventListener('click', () => this.showExportDialog('app'));
         container.querySelector('#pm-check-updates-global-btn').addEventListener('click', () => this._manualCheckForUpdates(container, 'app'));
         container.querySelector('#pm-update-all-global-btn').addEventListener('click', () => this._updateAllAvailable(container, 'app'));
         container.querySelector('#pm-disable-all-global-btn').addEventListener('click', (e) => this._disableAllPlugins(container, 'app', { el: e.currentTarget, isSwitch: false }));
         container.querySelector('#pm-enable-all-global-btn').addEventListener('click', (e) => this._enableAllPlugins(container, 'app', { el: e.currentTarget, isSwitch: false }));
 
         container.querySelector('#pm-install-col-btn').addEventListener('click', () => this.showInstallDialog(container, 'collection'));
-        container.querySelector('#pm-import-col-btn').addEventListener('click', () => this.showImportDialog(container, 'collection'));
-        container.querySelector('#pm-export-col-btn').addEventListener('click', () => this.showExportDialog('collection'));
         container.querySelector('#pm-check-updates-col-btn').addEventListener('click', () => this._manualCheckForUpdates(container, 'collection'));
         container.querySelector('#pm-update-all-col-btn').addEventListener('click', () => this._updateAllAvailable(container, 'collection'));
         container.querySelector('#pm-disable-all-col-btn').addEventListener('click', (e) => this._disableAllPlugins(container, 'collection', { el: e.currentTarget, isSwitch: false }));
         container.querySelector('#pm-enable-all-col-btn').addEventListener('click', (e) => this._enableAllPlugins(container, 'collection', { el: e.currentTarget, isSwitch: false }));
         this._bindListControls(container, 'app');
         this._bindListControls(container, 'collection');
-        container.querySelector('#pm-export-workspace-btn').addEventListener('click', () => this.showExportDialog('all'));
-        container.querySelector('#pm-import-workspace-btn').addEventListener('click', () => this.showImportDialog(container, 'all'));
         container.querySelector('#pm-export-workspace-themes-btn').addEventListener('click', () => this._exportAllThemes());
 
         // Setup collapsible Bulk Operations drawers
@@ -934,10 +960,17 @@ class Plugin extends AppPlugin {
             this._savedThemes = this._cloneJsonValue(Array.isArray(overrides.savedThemes) ? overrides.savedThemes : []);
             conf.custom.saved_themes = this._savedThemes;
         }
-        if (overrides.autoExportEnabled !== undefined) {
-            this._autoExportEnabled = !!overrides.autoExportEnabled;
-            conf.custom.auto_export_enabled = !!overrides.autoExportEnabled;
-            localStorage.setItem('pm_auto_export', this._autoExportEnabled ? 'true' : 'false');
+        if (overrides.ghBackupRepo !== undefined) {
+            this._ghBackupRepo = String(overrides.ghBackupRepo || '').trim();
+            conf.custom.gh_backup_repo = this._ghBackupRepo;
+        }
+        if (overrides.ghBackupBranch !== undefined) {
+            this._ghBackupBranch = String(overrides.ghBackupBranch || '').trim() || 'main';
+            conf.custom.gh_backup_branch = this._ghBackupBranch;
+        }
+        if (overrides.ghBackupPath !== undefined) {
+            this._ghBackupPath = String(overrides.ghBackupPath || '').trim() || 'thymer-workspace-backup.json';
+            conf.custom.gh_backup_path = this._ghBackupPath;
         }
 
         try {
@@ -960,18 +993,9 @@ class Plugin extends AppPlugin {
             const allGlobals = await this.data.getAllGlobalPlugins();
             const allCollections = await this.data.getAllCollections();
             const themeCount = Array.isArray(this._savedThemes) ? this._savedThemes.length : 0;
-            let autoBackupState;
-            if (!this._autoExportEnabled) {
-                autoBackupState = 'Auto-backup is disabled';
-            } else if (this._autoExportMode === 'download' || (!this._autoExportCaps.hasFSAccess && !this._autoExportDirHandle)) {
-                autoBackupState = this._autoExportMode === 'download'
-                    ? 'Auto-backup is enabled (downloads on each change)'
-                    : 'Auto-backup is enabled but needs a destination to be selected';
-            } else if (this._autoExportDirHandle) {
-                autoBackupState = `Auto-backup is enabled${this._autoExportDirName ? ` for ${this._autoExportDirName}` : ''}`;
-            } else {
-                autoBackupState = 'Auto-backup is enabled but needs a directory to be re-selected';
-            }
+            const autoBackupState = this._ghBackupRepo
+                ? `Auto-backup → GitHub (${this._ghBackupRepo})`
+                : 'Auto-backup inactive — set a repository under GitHub Backup below';
             summaryEl.innerHTML = `
                 <div class="pm-summary-grid">
                     <div class="pm-summary-card">
@@ -2022,7 +2046,7 @@ class Plugin extends AppPlugin {
         this._attachColorButton(card, actionsWrapper, this._ghostColorKey(disabled), panelContainer, typeFilter);
         actionsContainer.appendChild(actionsWrapper);
 
-        // Responsive overflow menu trigger button for small screens
+        // Overflow menu trigger (⋮)
         const triggerBtn = document.createElement('button');
         triggerBtn.className = 'pm-btn pm-card-overflow-trigger';
         triggerBtn.title = 'More Actions';
@@ -2171,7 +2195,7 @@ class Plugin extends AppPlugin {
         const remoteVersion = updateInfo ? updateInfo.version : null;
         const installedVersion = conf.version || conf.ver;
 
-        if (remoteVersion && remoteVersion !== installedVersion) {
+        if (this._isRemoteVersionNewer(remoteVersion, installedVersion)) {
             card.classList.add('pm-card-upgradeable');
             const badge = card.querySelector(`#vbadge-${p.getGuid()}`);
             if (badge) {
@@ -2185,7 +2209,7 @@ class Plugin extends AppPlugin {
         let reinstallBtn = null;
         if (sourceRepo) {
             // Known update version (string) if background checker flagged one
-            const knownUpdate = (remoteVersion && remoteVersion !== installedVersion) ? remoteVersion : null;
+            const knownUpdate = this._isRemoteVersionNewer(remoteVersion, installedVersion) ? remoteVersion : null;
 
             updateBtn = document.createElement('button');
             updateBtn.className = knownUpdate ? 'pm-btn pm-btn-update update-btn' : 'pm-btn pm-btn-update';
@@ -2320,17 +2344,23 @@ class Plugin extends AppPlugin {
             }
         });
 
-        // Collapsible wrapper for the secondary action buttons (Update, Reinstall, Link, Delete, Color)
+        // Overflow wrapper for secondary actions (Reinstall, Link, Delete, Color).
+        // When an update is available the Update button stays outside the wrapper
+        // so it's always visible; otherwise "Check Update" lives inside the menu.
         const actionsWrapper = document.createElement('div');
         actionsWrapper.className = 'pm-card-actions-wrapper';
-        if (updateBtn) actionsWrapper.appendChild(updateBtn);
+        if (updateBtn && updateBtn.classList.contains('update-btn')) {
+            actionsContainer.appendChild(updateBtn);
+        } else if (updateBtn) {
+            actionsWrapper.appendChild(updateBtn);
+        }
         if (reinstallBtn) actionsWrapper.appendChild(reinstallBtn);
         actionsWrapper.appendChild(linkBtn);
         actionsWrapper.appendChild(deleteBtn);
         this._attachColorButton(card, actionsWrapper, this._pluginColorKey(conf, p.getGuid()), panelContainer, typeFilter);
         actionsContainer.appendChild(actionsWrapper);
 
-        // Responsive overflow menu trigger button for small screens
+        // Overflow menu trigger (⋮)
         const triggerBtn = document.createElement('button');
         triggerBtn.className = 'pm-btn pm-card-overflow-trigger';
         triggerBtn.title = 'More Actions';
@@ -2665,7 +2695,7 @@ class Plugin extends AppPlugin {
                 <div class="pm-card pm-empty-state">
                     <div class="pm-card-info">
                         <p>No themes saved yet. Use <strong>Add from GitHub</strong> to fetch a theme CSS from a repository, or <strong>Paste CSS</strong> to save your own theme.</p>
-                        <p class="pm-meta-text">Once saved, use <strong>Backup Theme CSS</strong> to copy the combined CSS into Thymer's <strong>Edit Theme CSS</strong> setting.</p>
+                        <p class="pm-meta-text">Once saved, use <strong>Export CSS</strong> to copy the combined CSS into Thymer's <strong>Edit Theme CSS</strong> setting.</p>
                     </div>
                 </div>`;
             return;
@@ -3241,6 +3271,7 @@ class Plugin extends AppPlugin {
                 const { json, code, css } = p.getExistingCodeAndConfig();
                 const liveConfig = typeof p.getConfiguration === 'function' ? p.getConfiguration() : null;
                 const mergedJson = this._getBackupConfigSnapshot(json, liveConfig);
+                if (mergedJson.custom && mergedJson.custom.githubPat) mergedJson.custom.githubPat = '';
                 return { name: mergedJson.name, type: 'plugin', version: mergedJson.version, source_repo: mergedJson.__source_repo, code, css, json: mergedJson };
             } catch (e) { return null; }
         });
@@ -3293,8 +3324,10 @@ class Plugin extends AppPlugin {
         return {
             communityRepos: this.communityRepos || '',
             savedThemes: this._cloneJsonValue(Array.isArray(this._savedThemes) ? this._savedThemes : []),
-            autoExportEnabled: !!this._autoExportEnabled,
-            autoExportDirName: this._autoExportDirName || ''
+            // PAT deliberately excluded — backups must never carry credentials.
+            ghBackupRepo: this._ghBackupRepo || '',
+            ghBackupBranch: this._ghBackupBranch || 'main',
+            ghBackupPath: this._ghBackupPath || 'thymer-workspace-backup.json'
         };
     }
 
@@ -3335,21 +3368,14 @@ class Plugin extends AppPlugin {
         await this._saveManagerSettings({
             communityRepos: typeof managerSettings.communityRepos === 'string' ? managerSettings.communityRepos : undefined,
             savedThemes: Array.isArray(managerSettings.savedThemes) ? managerSettings.savedThemes : undefined,
-            autoExportEnabled: typeof managerSettings.autoExportEnabled === 'boolean' ? managerSettings.autoExportEnabled : undefined
+            ghBackupRepo: typeof managerSettings.ghBackupRepo === 'string' ? managerSettings.ghBackupRepo : undefined,
+            ghBackupBranch: typeof managerSettings.ghBackupBranch === 'string' ? managerSettings.ghBackupBranch : undefined,
+            ghBackupPath: typeof managerSettings.ghBackupPath === 'string' ? managerSettings.ghBackupPath : undefined
         });
-
-        if (typeof managerSettings.autoExportDirName === 'string') {
-            this._autoExportDirName = managerSettings.autoExportDirName;
-            localStorage.setItem('pm_auto_export_dir_name', managerSettings.autoExportDirName);
-        }
 
         if (container) {
             const reposInput = container.querySelector('#pm-repos-input');
             if (reposInput) reposInput.value = this.communityRepos;
-            const autoExportToggle = container.querySelector('#pm-auto-export-toggle');
-            if (autoExportToggle) autoExportToggle.checked = this._autoExportEnabled;
-            const autoExportDirLabel = container.querySelector('#pm-auto-export-dir-label');
-            if (autoExportDirLabel) autoExportDirLabel.textContent = this._autoExportDirName ? '📁 ' + this._autoExportDirName : 'No directory selected';
             this._renderThemesList(container);
             this._renderWorkspaceSummary(container);
         }
@@ -3438,25 +3464,8 @@ class Plugin extends AppPlugin {
         return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}T${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
     }
 
-    _getBackupJsonFilename(section) {
-        const wsName = this._getWorkspaceName();
-        const ts = this._getBackupTimestamp();
-        if (section === 'all') {
-            return `thymer-backup-workspace-${wsName}-${ts}.json`;
-        }
-        if (section === 'collection') {
-            return `thymer-backup-collections-${wsName}-${ts}.json`;
-        }
-        if (section === 'theme') {
-            return `thymer-backup-themes-${wsName}-${ts}.css`;
-        }
-        return `thymer-backup-plugins-${wsName}-${ts}.json`;
-    }
-
-    /** Auto-export full backup using whichever destination mode is active. */
+    /** Auto-backup — always on, pushes to GitHub when a repo is configured. */
     async _autoExport() {
-        if (!this._autoExportEnabled) return;
-
         // Debounce rapid successive calls (e.g. update-all loop)
         if (this._autoExportTimer) clearTimeout(this._autoExportTimer);
         this._autoExportTimer = setTimeout(() => { this._autoExportTimer = null; this._runAutoExport(); }, 400);
@@ -3464,187 +3473,200 @@ class Plugin extends AppPlugin {
 
     async _runAutoExport() {
         try {
+            if (!this._ghBackupRepo) {
+                console.warn('[Plugins Manager] Auto-backup skipped: set a repository in Settings → GitHub Backup.');
+                return;
+            }
             const data = await this._getExportData();
             const jsonStr = JSON.stringify(this._buildExportPayload('all', data), null, 2);
-            const filename = this._getBackupJsonFilename('all');
-            const mode = this._autoExportMode || (this._autoExportDirHandle ? 'fsaccess' : '');
-
-            if (mode === 'fsaccess' && this._autoExportDirHandle) {
-                const perm = await this._autoExportDirHandle.requestPermission({ mode: 'readwrite' });
-                if (perm !== 'granted') {
-                    console.warn('[Plugins Manager] Auto-export: write permission denied.');
-                    return;
-                }
-                const fileHandle = await this._autoExportDirHandle.getFileHandle(filename, { create: true });
-                const writable = await fileHandle.createWritable();
-                await writable.write(jsonStr);
-                await writable.close();
-                console.log(`[Plugins Manager] Auto-exported backup to ${this._autoExportDirName}/${filename}`);
-                return;
+            const out = await this._pushBackupToGithub(jsonStr);
+            if (out && out.skipped) {
+                console.log('[Plugins Manager] Auto-backup: GitHub copy already up to date.');
+            } else {
+                console.log(`[Plugins Manager] Auto-backup committed to ${this._ghBackupRepo}${out && out.commit ? ' @ ' + out.commit.slice(0, 7) : ''}`);
             }
-
-            if (mode === 'download') {
-                this._triggerDownload(filename, jsonStr, 'application/json');
-                console.log(`[Plugins Manager] Auto-exported backup as download: ${filename}`);
-                return;
-            }
-
-            console.warn('[Plugins Manager] Auto-export enabled but no destination is configured.');
         } catch (e) {
-            console.error('[Plugins Manager] Auto-export failed:', e);
+            console.error('[Plugins Manager] Auto-backup failed:', e);
             this.ui.addToaster({ title: "Auto-Backup Failed", message: e.message, autoDestroyTime: 6000, dismissible: true });
         }
     }
 
-    /** Detect available auto-export destinations in this runtime. */
-    _detectAutoExportCaps() {
-        const caps = { hasFSAccess: false, canDownload: true };
-        try {
-            const isElectron = typeof navigator !== 'undefined' &&
-                (navigator.userAgent.toLowerCase().indexOf(' electron/') > -1 ||
-                    navigator.userAgent.toLowerCase().indexOf('thymer') > -1);
-            caps.hasFSAccess = !isElectron && typeof window !== 'undefined' && typeof window.showDirectoryPicker === 'function';
-        } catch (e) { }
-        // Downloads work in any environment that provides URL.createObjectURL + <a download>
-        try { caps.canDownload = typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function'; } catch (e) { caps.canDownload = false; }
-        return caps;
+    // ── GitHub backup ─────────────────────────────────────────────────────────────
+    // Push/pull the workspace backup JSON via the GitHub Contents API. Plain fetch
+    // works from the plugin sandbox in every client — no File System Access API.
+    // Every push is a commit, so git history doubles as backup versioning.
+
+    _ghBackupTarget() {
+        const repo = (this._ghBackupRepo || '').trim();
+        if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) throw new Error('Set a GitHub repository (owner/name) in Settings → GitHub Backup.');
+        if (!this.githubPat) throw new Error('GitHub backup needs a Personal Access Token with read/write Contents permission on the backup repository.');
+        const branch = (this._ghBackupBranch || 'main').trim() || 'main';
+        const path = ((this._ghBackupPath || '').trim() || 'thymer-workspace-backup.json').replace(/^\/+/, '');
+        const url = `https://api.github.com/repos/${repo}/contents/${path.split('/').map(encodeURIComponent).join('/')}`;
+        return { repo, branch, path, url };
     }
 
-    _autoExportDestinationLabel() {
-        if (this._autoExportMode === 'fsaccess' && this._autoExportDirName) return '📁 ' + this._autoExportDirName;
-        if (this._autoExportMode === 'download') return '⬇ Downloads folder (per-change)';
-        // Legacy state: dir name saved but mode not set → treat as fsaccess
-        if (this._autoExportDirName) return '📁 ' + this._autoExportDirName;
-        return 'No destination selected';
+    _ghBackupHeaders() {
+        return {
+            'Authorization': `Bearer ${this.githubPat}`,
+            'Accept': 'application/vnd.github.v3+json',
+            'X-GitHub-Api-Version': '2022-11-28'
+        };
     }
 
-    _autoExportModeHint() {
-        if (this._autoExportCaps.hasFSAccess) {
-            return 'Backups are written directly to the chosen folder.';
+    _b64EncodeUtf8(str) {
+        const bytes = new TextEncoder().encode(str);
+        let bin = '';
+        const CHUNK = 0x8000;
+        for (let i = 0; i < bytes.length; i += CHUNK) {
+            bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
         }
-        if (this._autoExportCaps.canDownload) {
-            return 'Folder picker is unavailable in this build; backups will be saved via browser download to your Downloads folder on each change.';
-        }
-        return 'Automatic backups are not available in this runtime.';
+        return btoa(bin);
     }
 
-    /** Prompt for destination, adapting to runtime capabilities. */
-    async _chooseAutoExportTarget(container) {
-        if (this._choosingDir) return;
-        this._choosingDir = true;
-        try {
-            // If already set, offer to clear/reset it first
-            if (this._autoExportMode) {
-                const clear = await this._showConfirmModal('Reset Backup Destination', `Current destination: ${this._autoExportDestinationLabel()}\n\nWould you like to clear this destination?`, { confirmText: 'Clear Destination', cancelText: 'Keep Destination', danger: true });
-                if (clear) {
-                    this._autoExportDirHandle = null;
-                    this._autoExportDirName = '';
-                    this._autoExportMode = '';
-                    this._autoExportEnabled = false;
-                    localStorage.removeItem('pm_auto_export_mode');
-                    localStorage.removeItem('pm_auto_export_dir_name');
-                    localStorage.setItem('pm_auto_export', 'false');
+    _b64DecodeUtf8(b64) {
+        const bin = atob(String(b64).replace(/\s+/g, ''));
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        return new TextDecoder().decode(bytes);
+    }
 
-                    try {
-                        const req = indexedDB.open('plugin-manager-db', 1);
-                        req.onsuccess = (e) => {
-                            const db = e.target.result;
-                            const tx = db.transaction('handles', 'readwrite');
-                            tx.objectStore('handles').delete('autoExportDir');
-                        };
-                    } catch (e) { }
-
-                    if (container) {
-                        const lbl = container.querySelector('#pm-auto-export-dir-label');
-                        if (lbl) lbl.textContent = 'No destination selected';
-                        const toggle = container.querySelector('#pm-auto-export-toggle');
-                        if (toggle) toggle.checked = false;
-                        const hint = container.querySelector('#pm-auto-export-mode-help');
-                        if (hint) hint.textContent = this._autoExportModeHint();
-                        this._renderWorkspaceSummary(container);
-                    }
-                    await this._saveManagerSettings({ autoExportEnabled: false });
-                    this.ui.addToaster({ title: 'Destination Cleared', message: 'Automatic backups have been disabled.', autoDestroyTime: 3000, dismissible: true });
-                    return;
-                }
-            }
-
-            // Re-detect (in case the build updated between sessions)
-            this._autoExportCaps = this._detectAutoExportCaps();
-
-            if (this._autoExportCaps.hasFSAccess) {
-                try {
-                    const handle = await window.showDirectoryPicker({ mode: 'readwrite' });
-                    this._autoExportDirHandle = handle;
-                    this._autoExportDirName = handle.name;
-                    this._autoExportMode = 'fsaccess';
-                    localStorage.setItem('pm_auto_export_dir_name', handle.name);
-                    localStorage.setItem('pm_auto_export_mode', 'fsaccess');
-                    try {
-                        await this._storeAutoExportHandle(handle);
-                    } catch (storeError) {
-                        console.warn('[Plugins Manager] Failed to store directory handle in IndexedDB:', storeError);
-                    }
-                    await this._applyAutoExportUI(container, 'Directory Set', `Backups will save to: ${handle.name}`);
-                } catch (e) {
-                    if (e && e.name !== 'AbortError') {
-                        // Some desktop builds expose showDirectoryPicker but it throws NotAllowedError; fall back.
-                        console.warn('[Plugins Manager] showDirectoryPicker failed, falling back to download mode:', e);
-                        try {
-                            this.ui.addToaster({ title: "Folder Picker Error", message: e.message, autoDestroyTime: 6000, dismissible: true });
-                        } catch (toasterErr) { }
-                        this._autoExportCaps.hasFSAccess = false;
-                        await this._offerDownloadFallback(container, e.message);
-                    }
-                }
-                return;
-            }
-
-            if (this._autoExportCaps.canDownload) {
-                await this._offerDownloadFallback(container);
-                return;
-            }
-
-            this.ui.addToaster({
-                title: "Not Supported",
-                message: "This runtime does not expose a way to save files. Please use the Backup Workspace button manually.",
-                autoDestroyTime: 6000,
-                dismissible: true
+    async _ghReadBackupFile(ref) {
+        const { branch, url } = this._ghBackupTarget();
+        const refArg = ref || branch;
+        const res = await fetch(`${url}?ref=${encodeURIComponent(refArg)}`, { headers: this._ghBackupHeaders() });
+        if (res.status === 404) return { sha: null, content: null };
+        if (!res.ok) throw new Error(`GitHub read failed (${res.status}) — check repository, branch, and PAT permissions.`);
+        const j = await res.json();
+        if (j.sha && !(j.content || '').trim()) {
+            const raw = await fetch(`${url}?ref=${encodeURIComponent(refArg)}`, {
+                headers: { ...this._ghBackupHeaders(), 'Accept': 'application/vnd.github.v3.raw' }
             });
-        } finally {
-            this._choosingDir = false;
+            if (raw.ok) return { sha: j.sha, content: await raw.text() };
+        }
+        return { sha: j.sha || null, content: j.content ? this._b64DecodeUtf8(j.content) : null };
+    }
+
+    async _listBackupCommits(limit = 50, page = 1) {
+        const { repo, branch, path } = this._ghBackupTarget();
+        const url = `https://api.github.com/repos/${repo}/commits?path=${encodeURIComponent(path)}&sha=${encodeURIComponent(branch)}&per_page=${limit}&page=${page}`;
+        const res = await fetch(url, { headers: this._ghBackupHeaders() });
+        if (!res.ok) throw new Error(`GitHub history read failed (${res.status}) — check repository, branch, and PAT permissions.`);
+        const arr = await res.json();
+        return (Array.isArray(arr) ? arr : []).map(c => ({
+            sha: c.sha,
+            date: (c.commit && ((c.commit.author && c.commit.author.date) || (c.commit.committer && c.commit.committer.date))) || ''
+        }));
+    }
+
+    async _showGithubRestorePicker(container) {
+        const PAGE_SIZE = 50;
+        const firstPage = await this._listBackupCommits(PAGE_SIZE, 1);
+        if (!firstPage.length) {
+            const { repo, path } = this._ghBackupTarget();
+            throw new Error(`No backups found at ${repo}/${path} yet.`);
+        }
+
+        const tempDiv = document.createElement('div');
+        tempDiv.innerHTML = `
+            <div id="pm-gh-restore-modal" class="pm-modal">
+                <div class="pm-modal-content">
+                    <h3>Restore from GitHub</h3>
+                    <p>Choose a backup version — every backup is a commit:</p>
+                    <div id="pm-gh-commit-list" style="max-height:320px;overflow-y:auto;"></div>
+                    <div style="margin-top:12px;display:flex;justify-content:space-between;">
+                        <button class="pm-btn" id="pm-gh-restore-more">Load older…</button>
+                        <button class="pm-btn" id="pm-gh-restore-cancel">Cancel</button>
+                    </div>
+                </div>
+            </div>`;
+        this._openModal(tempDiv);
+        const listEl = tempDiv.querySelector('#pm-gh-commit-list');
+        const moreBtn = tempDiv.querySelector('#pm-gh-restore-more');
+        tempDiv.querySelector('#pm-gh-restore-cancel').addEventListener('click', () => this._closeModal(tempDiv));
+
+        let page = 1;
+        let total = 0;
+        const appendRows = (commits) => {
+            for (const c of commits) {
+                const d = c.date ? new Date(c.date) : null;
+                const label = d && !Number.isNaN(d.getTime()) ? d.toLocaleString() : c.sha.slice(0, 7);
+                const rowBtn = document.createElement('button');
+                rowBtn.type = 'button';
+                rowBtn.className = 'pm-btn pm-gh-commit-row';
+                rowBtn.style.cssText = 'display:block;width:100%;text-align:left;margin-bottom:6px;';
+                rowBtn.innerHTML = `<strong>${this._escHtml(label)}</strong>${total === 0 ? ' — latest' : ''}
+                    <span style="opacity:.7;font-size:12px;"> · ${this._escHtml(c.sha.slice(0, 7))}</span>`;
+                rowBtn.addEventListener('click', async () => {
+                    try {
+                        rowBtn.disabled = true;
+                        const jsonStr = await this._fetchBackupFromGithub(c.sha);
+                        this._closeModal(tempDiv);
+                        await this.showImportDialog(container, 'all');
+                        const ta = document.getElementById('pm-import-textarea');
+                        if (ta) ta.value = jsonStr;
+                    } catch (e) {
+                        this.ui.addToaster({ title: 'GitHub Restore Failed', message: e.message, autoDestroyTime: 6000, dismissible: true });
+                        rowBtn.disabled = false;
+                    }
+                });
+                listEl.appendChild(rowBtn);
+                total++;
+            }
+        };
+
+        const maybeHideMore = (batch) => {
+            if (batch.length < PAGE_SIZE) moreBtn.style.display = 'none';
+        };
+
+        appendRows(firstPage);
+        maybeHideMore(firstPage);
+
+        moreBtn.addEventListener('click', async () => {
+            try {
+                moreBtn.disabled = true;
+                moreBtn.innerText = 'Loading…';
+                page++;
+                const batch = await this._listBackupCommits(PAGE_SIZE, page);
+                appendRows(batch);
+                maybeHideMore(batch);
+            } catch (e) {
+                this.ui.addToaster({ title: 'GitHub Restore Failed', message: e.message, autoDestroyTime: 6000, dismissible: true });
+            } finally {
+                moreBtn.disabled = false;
+                moreBtn.innerText = 'Load older…';
+            }
+        });
+    }
+
+    async _pushBackupToGithub(jsonStr) {
+        const { repo, branch, url } = this._ghBackupTarget();
+        for (let attempt = 0; ; attempt++) {
+            const existing = await this._ghReadBackupFile();
+            if (existing.content !== null && existing.content === jsonStr) return { skipped: true };
+            const body = {
+                message: `thymer backup ${new Date().toISOString()} (${this._getWorkspaceName()})`,
+                content: this._b64EncodeUtf8(jsonStr),
+                branch
+            };
+            if (existing.sha) body.sha = existing.sha;
+            const res = await fetch(url, { method: 'PUT', headers: this._ghBackupHeaders(), body: JSON.stringify(body) });
+            if (res.ok) {
+                const j = await res.json();
+                return { commit: (j && j.commit && j.commit.sha) || null };
+            }
+            if ((res.status === 409 || res.status === 422) && attempt < 1) continue;
+            throw new Error(`GitHub push failed (${res.status}) to ${repo} — check the PAT has read/write Contents permission.`);
         }
     }
 
-    async _offerDownloadFallback(container, originalError = '') {
-        const msg = 'Folder picker is not available in this build (common on the Thymer desktop app). '
-            + 'Enable "download backup on each change" instead? Files will land in your Downloads folder.'
-            + (originalError ? `\n\n(Reason: ${originalError})` : '');
-        if (!await this._showConfirmModal('Please confirm', msg, { confirmText: 'Continue' })) return;
-        this._autoExportDirHandle = null;
-        this._autoExportDirName = '';
-        this._autoExportMode = 'download';
-        localStorage.setItem('pm_auto_export_mode', 'download');
-        localStorage.removeItem('pm_auto_export_dir_name');
-        this._applyAutoExportUI(container, 'Auto-Download Enabled', 'Backups will download on each change.');
-    }
-
-    async _applyAutoExportUI(container, toastTitle, toastMessage) {
-        if (container) {
-            const lbl = container.querySelector('#pm-auto-export-dir-label');
-            if (lbl) lbl.textContent = this._autoExportDestinationLabel();
-            const btn = container.querySelector('#pm-auto-export-dir-btn');
-            if (btn) btn.textContent = this._autoExportCaps.hasFSAccess ? 'Choose Directory' : 'Choose Destination';
-            const hint = container.querySelector('#pm-auto-export-mode-help');
-            if (hint) hint.textContent = this._autoExportModeHint();
-            const toggle = container.querySelector('#pm-auto-export-toggle');
-            if (toggle) toggle.checked = true;
+    async _fetchBackupFromGithub(ref) {
+        const existing = await this._ghReadBackupFile(ref);
+        if (existing.content === null) {
+            const { repo, path } = this._ghBackupTarget();
+            throw new Error(`No backup found at ${repo}/${path}. Push one first (any plugin change with auto-backup on, or Backup Workspace + commit manually).`);
         }
-        this._autoExportEnabled = true;
-        localStorage.setItem('pm_auto_export', 'true');
-        await this._saveManagerSettings({ autoExportEnabled: true });
-        if (container) this._renderWorkspaceSummary(container);
-        this.ui.addToaster({ title: toastTitle, message: toastMessage, autoDestroyTime: 3000, dismissible: true });
+        return existing.content;
     }
 
     /** Trigger a blob download via an ephemeral anchor. */
@@ -3661,43 +3683,6 @@ class Plugin extends AppPlugin {
             try { document.body.removeChild(a); } catch (e) { }
             try { URL.revokeObjectURL(url); } catch (e) { }
         }, 1500);
-    }
-
-    /** Store directory handle in IndexedDB for persistence across sessions */
-    async _storeAutoExportHandle(handle) {
-        return new Promise((resolve, reject) => {
-            const req = indexedDB.open('plugin-manager-db', 1);
-            req.onupgradeneeded = (e) => { e.target.result.createObjectStore('handles'); };
-            req.onsuccess = (e) => {
-                const db = e.target.result;
-                const tx = db.transaction('handles', 'readwrite');
-                tx.objectStore('handles').put(handle, 'autoExportDir');
-                tx.oncomplete = () => resolve();
-                tx.onerror = () => reject(tx.error);
-            };
-            req.onerror = () => reject(req.error);
-        });
-    }
-
-    /** Restore directory handle from IndexedDB */
-    async _restoreAutoExportHandle() {
-        try {
-            const handle = await new Promise((resolve, reject) => {
-                const req = indexedDB.open('plugin-manager-db', 1);
-                req.onupgradeneeded = (e) => { e.target.result.createObjectStore('handles'); };
-                req.onsuccess = (e) => {
-                    const db = e.target.result;
-                    const tx = db.transaction('handles', 'readonly');
-                    const getReq = tx.objectStore('handles').get('autoExportDir');
-                    getReq.onsuccess = () => resolve(getReq.result || null);
-                    getReq.onerror = () => reject(getReq.error);
-                };
-                req.onerror = () => reject(req.error);
-            });
-            if (handle) this._autoExportDirHandle = handle;
-        } catch (e) {
-            console.warn('[Plugins Manager] Could not restore auto-export directory handle:', e);
-        }
     }
 
     // --- Utilities ---
@@ -3969,6 +3954,20 @@ class Plugin extends AppPlugin {
         return await res.text();
     }
 
+    /**
+     * Fetch a file from a GitHub repo, preferring a dist/ subdirectory and falling
+     * back to the root (or subpath) if the file isn't in dist/. This supports repos
+     * with a build step where the installable JS/CSS lives in dist/ while plugin.json
+     * stays at the root.
+     */
+    async _fetchGithubFilePreferDist(owner, repo, branch, prefix, filename) {
+        try {
+            return await this._fetchGithubFile(owner, repo, branch, `${prefix}dist/${filename}`);
+        } catch (e) {
+            return await this._fetchGithubFile(owner, repo, branch, `${prefix}${filename}`);
+        }
+    }
+
     async fetchGithubRepo(url, { sourceFiles } = {}) {
         if (!this._isValidGithubUrl(url)) throw new Error("URL must point to github.com");
         const { owner, repo, subpath } = this._parseGithubUrl(url);
@@ -3997,13 +3996,13 @@ class Plugin extends AppPlugin {
         if (sourceFiles && sourceFiles.branch && sourceFiles.json && sourceFiles.js) {
             try {
                 const pluginJson = JSON.parse(await this._fetchGithubFile(owner, repo, sourceFiles.branch, `${prefix}${sourceFiles.json}`));
-                const pluginJs = await this._fetchGithubFile(owner, repo, sourceFiles.branch, `${prefix}${sourceFiles.js}`);
+                const pluginJs = await this._fetchGithubFilePreferDist(owner, repo, sourceFiles.branch, prefix, sourceFiles.js);
                 pluginJson.__source_repo = url;
                 pluginJson.__source_files = buildSourceFiles(sourceFiles.branch, sourceFiles.json, sourceFiles.js, sourceFiles.css);
                 const result = { json: pluginJson, js: pluginJs };
                 if (sourceFiles.css) {
                     try {
-                        result.css = await this._fetchGithubFile(owner, repo, sourceFiles.branch, `${prefix}${sourceFiles.css}`);
+                        result.css = await this._fetchGithubFilePreferDist(owner, repo, sourceFiles.branch, prefix, sourceFiles.css);
                     } catch (e) { /* CSS is optional */ }
                 }
                 return result;
@@ -4019,7 +4018,8 @@ class Plugin extends AppPlugin {
         const jsCandidates = ['plugin.js', `${repo}-plugin.js`, 'Custom Code'];
 
         for (const branch of ['main', 'master']) {
-            // Try each JSON candidate until one responds OK
+            // Try each JSON candidate until one responds OK.
+            // JSON is always at the root/subpath — never in dist/.
             let foundJson = null;
             let foundJsonName = null;
             for (const jsonName of jsonCandidates) {
@@ -4034,28 +4034,37 @@ class Plugin extends AppPlugin {
             }
             if (!foundJson) continue;
 
-            // Try each JS candidate until one responds OK
+            // Try each JS candidate — dist/ first, then root
             for (const jsName of jsCandidates) {
-                try {
-                    const pluginJs = await this._fetchGithubFile(owner, repo, branch, `${prefix}${jsName}`);
-                    foundJson.__source_repo = url;
+                let pluginJs = null;
+                for (const jsPath of [`${prefix}dist/${jsName}`, `${prefix}${jsName}`]) {
+                    try {
+                        pluginJs = await this._fetchGithubFile(owner, repo, branch, jsPath);
+                        break;
+                    } catch (e) { /* try next path */ }
+                }
+                if (!pluginJs) continue;
 
-                    // Also try to grab CSS while we're here
-                    const cssCandidates = ['plugin.css', 'styles.css', `${repo}-plugin.css`, 'Custom CSS'];
-                    const result = { json: foundJson, js: pluginJs };
-                    let foundCssName = null;
-                    for (const cssName of cssCandidates) {
+                foundJson.__source_repo = url;
+
+                // Also try to grab CSS while we're here — dist/ first, then root
+                const cssCandidates = ['plugin.css', 'styles.css', `${repo}-plugin.css`, 'Custom CSS'];
+                const result = { json: foundJson, js: pluginJs };
+                let foundCssName = null;
+                for (const cssName of cssCandidates) {
+                    for (const cssPath of [`${prefix}dist/${cssName}`, `${prefix}${cssName}`]) {
                         try {
-                            result.css = await this._fetchGithubFile(owner, repo, branch, `${prefix}${cssName}`);
+                            result.css = await this._fetchGithubFile(owner, repo, branch, cssPath);
                             foundCssName = cssName;
                             break;
-                        } catch (e) { /* CSS is optional */ }
+                        } catch (e) { /* try next path */ }
                     }
+                    if (foundCssName) break;
+                }
 
-                    // Cache the discovered filenames for future fetches
-                    foundJson.__source_files = buildSourceFiles(branch, foundJsonName, jsName, foundCssName);
-                    return result;
-                } catch (e) { /* try next */ }
+                // Cache the discovered filenames for future fetches
+                foundJson.__source_files = buildSourceFiles(branch, foundJsonName, jsName, foundCssName);
+                return result;
             }
         }
 
@@ -4068,13 +4077,24 @@ class Plugin extends AppPlugin {
             throw new Error(`Could not find plugin files in ${label}. Standard names (plugin.json/plugin.js) not found, and directory listing failed: ${reason}`);
         }
 
-        // Find the JSON config file
+        // Find the JSON config file — always in root/subpath, never in dist/
         const jsonFile = this._findFileByRole(files, 'json');
         if (!jsonFile) throw new Error(`No config file (.json) found in ${label}`);
 
-        // Find the JS code file
-        const jsFile = this._findFileByRole(files, 'js');
+        // Try to list a dist/ subdirectory for JS/CSS (build-output repos)
+        let distFiles = null;
+        try {
+            distFiles = await this._listRepoDirectory(owner, repo, `${subpath ? subpath + '/' : ''}dist`);
+        } catch (e) { /* no dist/ directory — use root files for JS/CSS */ }
+
+        // Find JS: prefer dist/, fall back to root
+        let jsFile = distFiles ? this._findFileByRole(distFiles, 'js') : null;
+        if (!jsFile) jsFile = this._findFileByRole(files, 'js');
         if (!jsFile) throw new Error(`No code file (.js) found in ${label}`);
+
+        // Find CSS: prefer dist/, fall back to root
+        let cssFile = distFiles ? this._findFileByRole(distFiles, 'css') : null;
+        if (!cssFile) cssFile = this._findFileByRole(files, 'css');
 
         // Fetch the actual file contents
         const jsonRes = await fetch(jsonFile.download_url);
@@ -4091,9 +4111,6 @@ class Plugin extends AppPlugin {
         const jsRes = await fetch(jsFile.download_url);
         if (!jsRes.ok) throw new Error(`Failed to download ${jsFile.name}`);
         const pluginJs = await jsRes.text();
-
-        // Optionally grab CSS
-        const cssFile = this._findFileByRole(files, 'css');
 
         pluginJson.__source_repo = url;
         // Cache discovered filenames — detect branch from download_url
@@ -4208,6 +4225,37 @@ class Plugin extends AppPlugin {
         }
 
         if (!targetPlugin) {
+            // Validate inputs BEFORE creating any container — a validation failure after
+            // createGlobalPlugin() orphans an empty "New Global Plugin" record.
+            this._validatePluginJS(jsonConf.name, jsCode);
+
+            // Security: enforce code size limit (500KB)
+            if (jsCode && jsCode.length > 500 * 1024) {
+                throw new Error(`"${jsonConf.name || 'Unknown'}" code exceeds the 500KB size limit.`);
+            }
+        }
+
+        // Security: sanitize config to only keep expected fields. `custom` (the plugin's
+        // own settings) is taken from the repo on FRESH installs only — it's just the
+        // plugin's declared defaults, and the Configuration tab is its settings UI. On
+        // updates the user's existing `custom` always wins so a repo can't clobber
+        // saved settings/secrets.
+        const isFreshInstall = !targetPlugin;
+        const sanitizedConf = this._sanitizePluginConfig(jsonConf, { allowCustom: trustedConfig || isFreshInstall, preserveUnknownKeys: trustedConfig });
+        if (existingConf && existingConf.custom !== undefined && (!trustedConfig || jsonConf.custom === undefined)) {
+            sanitizedConf.custom = this._cloneJsonValue(existingConf.custom);
+        }
+
+        // Validate update/reinstall path too (fresh install already validated above)
+        if (targetPlugin) {
+            this._validatePluginJS(jsonConf.name, jsCode);
+            if (jsCode && jsCode.length > 500 * 1024) {
+                throw new Error(`"${jsonConf.name || 'Unknown'}" code exceeds the 500KB size limit.`);
+            }
+        }
+
+        let createdContainer = false;
+        if (!targetPlugin) {
             if (pType === 'app' || pType === 'global') {
                 targetPlugin = await this.data.createGlobalPlugin();
             } else if (pType === 'collection') {
@@ -4215,53 +4263,48 @@ class Plugin extends AppPlugin {
             }
 
             if (!targetPlugin) throw new Error("Failed to create plugin container in workspace.");
+            createdContainer = true;
         }
 
-        // Validate JS before saving — catch issues that would crash Thymer's runtime
-        this._validatePluginJS(jsonConf.name, jsCode);
-
-        // Security: sanitize config to only keep expected fields
-        const sanitizedConf = this._sanitizePluginConfig(jsonConf, { allowCustom: trustedConfig, preserveUnknownKeys: trustedConfig });
-        if (existingConf && existingConf.custom !== undefined && (!trustedConfig || jsonConf.custom === undefined)) {
-            sanitizedConf.custom = this._cloneJsonValue(existingConf.custom);
-        }
-
-        // Security: enforce code size limit (500KB)
-        if (jsCode && jsCode.length > 500 * 1024) {
-            throw new Error(`"${jsonConf.name || 'Unknown'}" code exceeds the 500KB size limit.`);
-        }
-
-        // For collections: remap filter_colguid for link-to-record fields before saving
-        const pTypeNorm = (jsonConf.type || '').toLowerCase();
-        if (pTypeNorm === 'collection' && Array.isArray(sanitizedConf.fields) && sanitizedConf.fields.length > 0) {
-            const hasColNames = sanitizedConf.fields.some(f => f.filter_colname);
-            if (hasColNames) {
-                const allCollections = await this.data.getAllCollections();
-                const nameToGuid = {};
-                for (const tc of allCollections) {
-                    try {
-                        const tc_conf = tc.getConfiguration();
-                        const tc_guid = tc.getGuid ? tc.getGuid() : null;
-                        if (tc_guid && tc_conf && tc_conf.name) nameToGuid[tc_conf.name] = tc_guid;
-                    } catch (e) { }
-                }
-                sanitizedConf.fields = sanitizedConf.fields.map(f => {
-                    if (f.filter_colguid && nameToGuid[f.filter_colname]) {
-                        const { filter_colname, ...rest } = f;
-                        return { ...rest, filter_colguid: nameToGuid[f.filter_colname] };
+        try {
+            // For collections: remap filter_colguid for link-to-record fields before saving
+            const pTypeNorm = (jsonConf.type || '').toLowerCase();
+            if (pTypeNorm === 'collection' && Array.isArray(sanitizedConf.fields) && sanitizedConf.fields.length > 0) {
+                const hasColNames = sanitizedConf.fields.some(f => f.filter_colname);
+                if (hasColNames) {
+                    const allCollections = await this.data.getAllCollections();
+                    const nameToGuid = {};
+                    for (const tc of allCollections) {
+                        try {
+                            const tc_conf = tc.getConfiguration();
+                            const tc_guid = tc.getGuid ? tc.getGuid() : null;
+                            if (tc_guid && tc_conf && tc_conf.name) nameToGuid[tc_conf.name] = tc_guid;
+                        } catch (e) { }
                     }
-                    const { filter_colname, ...rest } = f;
-                    return rest;
-                });
+                    sanitizedConf.fields = sanitizedConf.fields.map(f => {
+                        if (f.filter_colguid && nameToGuid[f.filter_colname]) {
+                            const { filter_colname, ...rest } = f;
+                            return { ...rest, filter_colguid: nameToGuid[f.filter_colname] };
+                        }
+                        const { filter_colname, ...rest } = f;
+                        return rest;
+                    });
+                }
             }
-        }
 
-        await targetPlugin.savePlugin(sanitizedConf, jsCode);
+            await targetPlugin.savePlugin(sanitizedConf, jsCode);
 
-        // Security: sanitize and save CSS if provided
-        if (cssCode) {
-            const sanitizedCSS = this._sanitizeCSS(cssCode);
-            await targetPlugin.saveCSS(sanitizedCSS);
+            // Security: sanitize and save CSS if provided
+            if (cssCode) {
+                const sanitizedCSS = this._sanitizeCSS(cssCode);
+                await targetPlugin.saveCSS(sanitizedCSS);
+            }
+        } catch (e) {
+            // Don't orphan a container we created for this install
+            if (createdContainer) {
+                try { await targetPlugin.trashPlugin(); } catch (_) { }
+            }
+            throw e;
         }
 
         this._autoExport(); // fire-and-forget
@@ -4714,165 +4757,14 @@ class Plugin extends AppPlugin {
         return { count: successCount, failed: failedNames.length };
     }
 
-    async showExportDialog(typeFilter) {
-        const allData = await this._getExportData();
-        let candidateData;
-        if (typeFilter === 'app') {
-            candidateData = allData.filter(d => d.type !== 'collection');
-        } else if (typeFilter === 'collection') {
-            candidateData = allData.filter(d => d.type === 'collection');
-        } else {
-            candidateData = allData;
-        }
-
-        const sectionMeta = this._getSectionMeta(typeFilter);
-        const typeLabel = sectionMeta.label;
-
-        // Build the selection list HTML
-        const selectionRows = candidateData.map((d, i) => `
-            <label style="display:flex; align-items:center; gap:8px; padding:6px 0; border-bottom:1px solid var(--pm-border-default); cursor:pointer;">
-                <input type="checkbox" class="pm-export-cb" data-index="${i}" checked />
-                <span style="flex:1; font-size:13px;">${this._escHtml(d.name || 'Unnamed')}</span>
-                <span style="font-size:11px; color:var(--pm-text-muted);">${this._escHtml(d.type || '')}</span>
-            </label>
-        `).join('');
-
-        const overlayHtml = `
-            <div id="pm-export-modal" class="pm-modal">
-                <div class="pm-modal-content pm-export-content">
-                    <h3>Backup ${typeLabel}</h3>
-
-                    <div style="margin-bottom:14px;">
-                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
-                            <label style="font-weight:bold; font-size:13px;">Select ${this._escHtml(sectionMeta.itemLabel)} to include</label>
-                            <div style="display:flex; gap:8px;">
-                                <button class="pm-btn" id="pm-sel-all" style="padding:2px 8px; font-size:11px;">All</button>
-                                <button class="pm-btn" id="pm-sel-none" style="padding:2px 8px; font-size:11px;">None</button>
-                            </div>
-                        </div>
-                        <div id="pm-export-selection" style="max-height:180px; overflow-y:auto; border:1px solid var(--pm-border-default); border-radius:6px; padding:0 10px;">
-                            ${selectionRows || '<p style="font-size:13px;color:var(--pm-text-muted);padding:8px 0;">No plugins found.</p>'}
-                        </div>
-                    </div>
-
-                    <div style="margin-bottom: 20px;">
-                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
-                            <label style="font-weight: bold;">Repository URLs (for quick restore in another workspace)</label>
-                            <div style="display: flex; gap: 5px;">
-                                <button class="pm-btn" id="pm-copy-urls" style="padding: 2px 8px; font-size: 11px;">Copy URLs</button>
-                                <button class="pm-btn" id="pm-download-urls" style="padding: 2px 8px; font-size: 11px;">Download URLs</button>
-                            </div>
-                        </div>
-                        <textarea class="pm-textarea pm-textarea-urls" id="pm-urls-text" readonly></textarea>
-                    </div>
-                    
-                    <div style="margin-bottom: 15px;">
-                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
-                            <label style="font-weight: bold;">Full Backup (JSON with code, CSS, config, and manager settings)</label>
-                            <div style="display: flex; gap: 5px;">
-                                <button class="pm-btn" id="pm-copy-json" style="padding: 2px 8px; font-size: 11px;">Copy JSON</button>
-                                <button class="pm-btn primary" id="pm-download-json" style="padding: 2px 8px; font-size: 11px;">Download Backup</button>
-                            </div>
-                        </div>
-                        <textarea class="pm-textarea pm-textarea-json" id="pm-full-backup-text" readonly></textarea>
-                    </div>
-                    
-                    <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px;">
-                        <button class="pm-btn" id="pm-export-close">Close</button>
-                    </div>
-                </div>
-            </div>
-        `;
-
-        const tempDiv = document.createElement('div');
-        tempDiv.innerHTML = overlayHtml;
-        this._openModal(tempDiv);
-
-        // Helper: compute selected export data and refresh the textareas
-        const refreshTextareas = () => {
-            const checked = [...tempDiv.querySelectorAll('.pm-export-cb:checked')].map(cb => candidateData[parseInt(cb.dataset.index)]);
-            const urls = checked.map(d => d.source_repo).filter(Boolean).join('\n');
-            const fullBackup = JSON.stringify(this._buildExportPayload(typeFilter, checked), null, 2);
-            tempDiv.querySelector('#pm-urls-text').value = urls;
-            tempDiv.querySelector('#pm-full-backup-text').value = fullBackup;
-        };
-
-        // Initial fill
-        refreshTextareas();
-
-        // Checkbox changes
-        tempDiv.querySelectorAll('.pm-export-cb').forEach(cb => cb.addEventListener('change', refreshTextareas));
-
-        // Select All / None
-        tempDiv.querySelector('#pm-sel-all').addEventListener('click', () => {
-            tempDiv.querySelectorAll('.pm-export-cb').forEach(cb => cb.checked = true);
-            refreshTextareas();
-        });
-        tempDiv.querySelector('#pm-sel-none').addEventListener('click', () => {
-            tempDiv.querySelectorAll('.pm-export-cb').forEach(cb => cb.checked = false);
-            refreshTextareas();
-        });
-
-        tempDiv.querySelector('#pm-export-close').addEventListener('click', () => {
-            this._closeModal(tempDiv);
-        });
-
-        // Copy actions
-        tempDiv.querySelector('#pm-copy-urls').addEventListener('click', async (e) => {
-            await navigator.clipboard.writeText(tempDiv.querySelector('#pm-urls-text').value);
-            const orig = e.target.innerText;
-            e.target.innerText = "Copied!";
-            setTimeout(() => e.target.innerText = orig, 2000);
-        });
-
-        tempDiv.querySelector('#pm-copy-json').addEventListener('click', async (e) => {
-            await navigator.clipboard.writeText(tempDiv.querySelector('#pm-full-backup-text').value);
-            const orig = e.target.innerText;
-            e.target.innerText = "Copied!";
-            setTimeout(() => e.target.innerText = orig, 2000);
-        });
-
-        // Download actions
-        tempDiv.querySelector('#pm-download-urls').addEventListener('click', () => {
-            const content = tempDiv.querySelector('#pm-urls-text').value;
-            const blob = new Blob([content], { type: 'text/plain' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = `thymer-${typeFilter}-urls-${this._getWorkspaceName()}.txt`;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url);
-        });
-
-        tempDiv.querySelector('#pm-download-json').addEventListener('click', () => {
-            const content = tempDiv.querySelector('#pm-full-backup-text').value;
-            const blob = new Blob([content], { type: 'application/json' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = this._getBackupJsonFilename(typeFilter);
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url);
-        });
-    }
-
     async showImportDialog(container, typeFilter) {
         const sectionMeta = this._getSectionMeta(typeFilter);
         const overlayHtml = `
             <div id="pm-import-modal" class="pm-modal">
                 <div class="pm-modal-content">
                     <h3>Restore ${sectionMeta.importLabel}</h3>
-                    <p>Paste GitHub URLs (one per line), paste a JSON backup array/object, or upload a workspace backup file.</p>
+                    <p>Paste GitHub URLs (one per line) or a JSON backup array/object.</p>
                     <textarea id="pm-import-textarea" class="pm-textarea" placeholder="https://github.com/user/repo1\nhttps://github.com/user/repo2"></textarea>
-                    
-                    <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--pm-border-default);">
-                        <label style="display: block; font-size: 13px; margin-bottom: 5px; color: var(--pm-text-muted);">Or upload a backup file:</label>
-                        <input type="file" id="pm-import-file" accept=".json" style="font-size: 13px; color: inherit; width: 100%;" />
-                    </div>
 
                     <div style="margin-top: 15px; display: flex; align-items: center; justify-content: space-between;">
                         <label style="display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer;">
@@ -4896,27 +4788,25 @@ class Plugin extends AppPlugin {
             this._closeModal(tempDiv);
         });
 
-        // Handle file upload immediately dumping text into the textarea for preview/processing
-        document.getElementById('pm-import-file').addEventListener('change', (e) => {
-            const file = e.target.files[0];
-            if (!file) return;
-            const reader = new FileReader();
-            reader.onload = (ev) => {
-                document.getElementById('pm-import-textarea').value = ev.target.result;
-            };
-            reader.readAsText(file);
-        });
-
         document.getElementById('pm-import-confirm').addEventListener('click', async () => {
             const val = document.getElementById('pm-import-textarea').value.trim();
             if (!val) return;
 
             const isFullOverride = document.getElementById('pm-import-full-override').checked;
-            if (isFullOverride) {
-                if (!await this._showConfirmModal('Full override', `Full Override will DELETE existing ${sectionMeta.warningLabel} that are not in this backup.\nThis cannot be undone. Are you sure?`, { confirmText: 'Override', danger: true })) {
-                    return;
-                }
+            // window.confirm() is suppressed inside the plugin sandbox (returns false
+            // without displaying), so use a two-click arm instead of a dialog.
+            if (isFullOverride && !this._fullOverrideArmed) {
+                this._fullOverrideArmed = true;
+                const confirmBtn = document.getElementById('pm-import-confirm');
+                confirmBtn.innerText = `Click again to DELETE ${sectionMeta.warningLabel} not in backup`;
+                setTimeout(() => {
+                    this._fullOverrideArmed = false;
+                    const b = document.getElementById('pm-import-confirm');
+                    if (b) b.innerText = 'Import';
+                }, 8000);
+                return;
             }
+            this._fullOverrideArmed = false;
 
             document.getElementById('pm-import-confirm').innerText = "Restoring...";
             document.getElementById('pm-import-confirm').disabled = true;
@@ -5034,8 +4924,16 @@ class Plugin extends AppPlugin {
                 throw new Error(`Failed to fetch from ${sourceRepo}: ${fetchErr.message}`);
             }
 
-            if (!forceUpdate && remoteJson.version === currentConf.version) {
-                this.ui.addToaster({ title: "Up to date", message: `${currentConf.name} is already on the latest version.`, autoDestroyTime: 3000, dismissible: true });
+            if (!forceUpdate && !this._isRemoteVersionNewer(remoteJson.version, currentConf.version)) {
+                const localAhead = remoteJson.version !== currentConf.version;
+                this.ui.addToaster({
+                    title: "Up to date",
+                    message: localAhead
+                        ? `${currentConf.name} (v${currentConf.version}) is ahead of GitHub (v${remoteJson.version || 'none'}). Push the repo to sync. Use Reinstall to overwrite local anyway.`
+                        : `${currentConf.name} is already on the latest version.`,
+                    autoDestroyTime: localAhead ? 6000 : 3000,
+                    dismissible: true
+                });
                 btnEl.className = 'pm-btn pm-btn-update';
                 btnEl.innerHTML = '';
                 btnEl.appendChild(this.ui.createIcon('check'));

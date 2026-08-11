@@ -1,5 +1,9 @@
 /*
- * .pm-tokens declares the design tokens WITHOUT any layout. Surfaces appended to <body>
+ * Spacing scale (4-unit base): 2, 4, 8, 12, 16, 20, 24, 32.
+ * Use these steps for all padding, margin, and gap values. One-off values
+ * are acceptable only for optical corrections (icon centering, ribbon offsets).
+ *
+ * .pm-tokens declares the design tokens WITHOUT any layout. Surfaces appended to <body
  * (popovers, modal wrappers) must use it rather than .pm-container — that class also carries
  * the panel's geometry (width: 100%), which a position:fixed popover would inherit as 100%
  * of the VIEWPORT, blowing it out to a full-width bar.
@@ -241,7 +245,7 @@
     display: flex;
     justify-content: space-between;
     gap: 12px;
-    margin-bottom: 15px;
+    margin-bottom: 16px;
     flex-wrap: wrap;
     align-items: flex-start;
 }
@@ -272,7 +276,7 @@
 .pm-list-container {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(min(320px, 100%), 1fr));
-    gap: 15px;
+    gap: 16px;
     /* Allow grid cells to shrink below their content's intrinsic width so cards never overflow the panel. */
     min-width: 0;
 }
@@ -476,7 +480,7 @@
     width: 100%;
     min-width: 0;
     justify-content: flex-start;
-    margin-top: 18px;
+    margin-top: 16px;
 }
 
 /*
@@ -624,14 +628,14 @@
  * already uses a fixed deep purple with light text ("legibility on all themes"). Match it, so
  * the button and the ribbon above it read as one signal.
  */
-.pm-card-actions-wrapper .pm-btn.pm-btn-update.update-btn {
+.pm-btn.pm-btn-update.update-btn {
     background: #5b21b6;
     color: #ede9fe;
     border-color: #7c3aed;
     font-weight: 600;
 }
 
-.pm-card-actions-wrapper .pm-btn.pm-btn-update.update-btn:hover {
+.pm-btn.pm-btn-update.update-btn:hover {
     background: #6d28d9;
     border-color: #8b5cf6;
 }
@@ -1064,6 +1068,12 @@
     margin-bottom: 0;
 }
 
+/* Two short fields side-by-side (branch + path in the backup section). */
+.pm-input-group-inline {
+    flex: 1 1 200px;
+    margin-bottom: 12px;
+}
+
 .pm-settings-card {
     height: auto;
     gap: 18px;
@@ -1297,13 +1307,22 @@
     border-color: color-mix(in srgb, var(--pm-accent) 35%, var(--pm-border-default));
 }
 
-/* List controls row: search + sort + status chips + color filter. */
+/* List controls row: search + sort + status chips + color filter.
+   Two groups wrap as units — (search + sort) and (chips + color + view) —
+   instead of five items wrapping independently at intermediate widths. */
 .pm-list-controls {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 12px;
     flex-wrap: wrap;
-    margin-bottom: 15px;
+    margin-bottom: 16px;
+}
+
+.pm-list-controls-group {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
 }
 
 .pm-chips {
@@ -1700,60 +1719,46 @@
     border-color: var(--pm-border-hover);
 }
 
-/* Responsive card actions / overflow menu */
-.pm-card-overflow-trigger {
-    display: none !important;
-}
-.pm-card-actions-wrapper {
-    display: flex;
-    gap: 8px;
-    align-items: center;
-}
-
-/* Hidden button labels on desktop */
-.pm-btn-label {
-    display: none;
-}
-.pm-color-btn-dot {
-    display: none;
-}
-
-/* Prevent menu clipping when overflow is visible */
-.pm-card.pm-menu-open {
-    overflow: visible !important;
-}
-
-/* On small containers, hide regular buttons, show overflow trigger */
-.pm-container.narrow .pm-card-actions {
+/*
+ * Card actions: most buttons live in a dropdown overflow menu (⋮) so the card
+ * row stays calm. Only the on/off toggle and — when an update is available — the
+ * Update button are always visible. The overflow trigger sits between them and
+ * the toggle; the wrapper is an absolutely-positioned popover above the row.
+ */
+.pm-card-actions {
     position: relative;
-    flex-wrap: nowrap;
 }
-.pm-container.narrow .pm-card-overflow-trigger {
-    display: inline-flex !important;
+
+.pm-card-overflow-trigger {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-self: center;
 }
-.pm-container.narrow .pm-card-actions-wrapper {
+
+.pm-card-actions-wrapper {
     display: none;
     position: absolute;
     right: 0;
     bottom: 100%;
     margin-bottom: 8px;
-    background: var(--pm-bg-default, #1e1e1e);
-    border: 1px solid var(--pm-border-default, #333333);
-    border-radius: 6px;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+    background: color-mix(in srgb, #ffffff 7%, var(--pm-modal-bg));
+    border: 1px solid color-mix(in srgb, #ffffff 16%, var(--pm-border-default));
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
     z-index: 100;
     flex-direction: column;
     padding: 6px;
-    gap: 6px;
-    min-width: 170px;
+    gap: 4px;
+    min-width: 180px;
     align-items: stretch;
 }
-.pm-container.narrow .pm-card-actions-wrapper.pm-open {
+
+.pm-card-actions-wrapper.pm-open {
     display: flex;
 }
 
-/* Style normal menu buttons */
-.pm-container.narrow .pm-card-actions-wrapper .pm-btn {
+/* Menu items: full-width, left-aligned, quiet until hovered */
+.pm-card-actions-wrapper .pm-btn {
     width: 100%;
     justify-content: flex-start;
     border: none;
@@ -1761,24 +1766,25 @@
     padding: 8px 12px;
     font-size: 13px;
     white-space: nowrap;
-    color: var(--pm-text-muted, #888888);
-}
-.pm-container.narrow .pm-card-actions-wrapper .pm-btn:hover {
-    background: var(--pm-bg-hover, #2a2a2a);
-    color: var(--pm-text-bright, #ffffff);
-}
-.pm-container.narrow .pm-card-actions-wrapper .pm-btn.danger {
-    color: var(--pm-danger, #ef4444);
+    color: var(--pm-text-muted);
 }
 
-/* Show labels inside the menu */
-.pm-container.narrow .pm-card-actions-wrapper .pm-btn-label {
+.pm-card-actions-wrapper .pm-btn:hover {
+    background: var(--pm-bg-hover);
+    color: var(--pm-text-color);
+}
+
+.pm-card-actions-wrapper .pm-btn.danger {
+    color: var(--pm-danger-fg);
+}
+
+.pm-card-actions-wrapper .pm-btn-label {
     display: inline-block;
     margin-left: 8px;
 }
 
-/* Redesign Color Button inside the menu */
-.pm-container.narrow .pm-card-actions-wrapper .pm-color-btn {
+/* Color tag button: redesigned as a menu item inside the dropdown */
+.pm-card-actions-wrapper .pm-color-btn {
     width: 100%;
     height: auto;
     border-radius: 4px;
@@ -1794,7 +1800,7 @@
     margin-left: 0 !important;
 }
 
-.pm-container.narrow .pm-card-actions-wrapper .pm-color-btn-dot {
+.pm-card-actions-wrapper .pm-color-btn-dot {
     display: inline-block;
     width: 16px;
     height: 16px;
@@ -1806,8 +1812,18 @@
     flex-shrink: 0;
 }
 
-.pm-container.narrow .pm-card-actions-wrapper .pm-color-btn[data-has-color] .pm-color-btn-dot {
+.pm-card-actions-wrapper .pm-color-btn[data-has-color] .pm-color-btn-dot {
     background: var(--pm-card-accent) !important;
     background-image: none !important;
     border-color: color-mix(in srgb, #ffffff 35%, var(--pm-card-accent));
+}
+
+/* Prevent menu clipping when overflow is visible */
+.pm-card.pm-menu-open {
+    overflow: visible !important;
+}
+
+/* The standalone update button (outside the wrapper, visible when an update is available) */
+.pm-card-actions > .pm-btn.update-btn {
+    flex: 0 0 auto;
 }

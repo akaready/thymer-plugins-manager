@@ -3,7 +3,7 @@
     "type": "plugin",
     "name": "Plugins Manager",
     "icon": "box",
-    "version": "1.22.0",
+    "version": "1.23.0",
     "__source_repo": "https://github.com/ahpatel/thymer-plugins-manager",
     "description": "Install, update, import and export Thymer plugins from GitHub or local files.",
     "permissions": [
@@ -11,6 +11,9 @@
         "collections"
     ],
     "custom": {
-        "githubPat": ""
+        "githubPat": "",
+        "gh_backup_repo": "",
+        "gh_backup_branch": "main",
+        "gh_backup_path": "thymer-workspace-backup.json"
     }
 }
