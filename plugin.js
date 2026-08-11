@@ -428,13 +428,13 @@ class Plugin extends AppPlugin {
                     <div class="pm-tab-toolbar">
                         <div class="pm-tab-actions pm-tab-actions-primary">
                             <button class="pm-btn primary" id="pm-install-global-btn">Install Plugin</button>
+                            <button class="pm-btn pm-btn-update update-btn pm-hidden" id="pm-update-all-global-btn" title="Update All">Update All</button>
                             <button class="pm-btn pm-drawer-toggle" id="pm-drawer-toggle-global">More ▾</button>
                         </div>
                     </div>
                     <div class="pm-drawer pm-hidden" id="pm-drawer-global">
                         <div class="pm-drawer-content">
                             <button class="pm-btn pm-btn-update" id="pm-check-updates-global-btn" title="Check for plugin updates"><span class="pm-btn-icon" aria-hidden="true">↻</span> Check Updates</button>
-                            <button class="pm-btn pm-btn-update update-btn pm-hidden" id="pm-update-all-global-btn">Update All</button>
                             <button class="pm-btn pm-btn-alloff" id="pm-disable-all-global-btn" title="Turn off all plugins">All Off</button>
                             <button class="pm-btn pm-btn-allon" id="pm-enable-all-global-btn" title="Turn all disabled plugins back on">All On</button>
                         </div>
@@ -469,13 +469,13 @@ class Plugin extends AppPlugin {
                     <div class="pm-tab-toolbar">
                         <div class="pm-tab-actions pm-tab-actions-primary">
                             <button class="pm-btn primary" id="pm-install-col-btn">Install Collection Plugin</button>
+                            <button class="pm-btn pm-btn-update update-btn pm-hidden" id="pm-update-all-col-btn" title="Update All">Update All</button>
                             <button class="pm-btn pm-drawer-toggle" id="pm-drawer-toggle-col">More ▾</button>
                         </div>
                     </div>
                     <div class="pm-drawer pm-hidden" id="pm-drawer-col">
                         <div class="pm-drawer-content">
                             <button class="pm-btn pm-btn-update" id="pm-check-updates-col-btn" title="Check for collection updates"><span class="pm-btn-icon" aria-hidden="true">↻</span> Check Updates</button>
-                            <button class="pm-btn pm-btn-update update-btn pm-hidden" id="pm-update-all-col-btn">Update All</button>
                             <button class="pm-btn pm-btn-alloff" id="pm-disable-all-col-btn" title="Turn off all collection plugins">All Off</button>
                             <button class="pm-btn pm-btn-allon" id="pm-enable-all-col-btn" title="Turn all disabled collection plugins back on">All On</button>
                         </div>
@@ -2217,6 +2217,7 @@ class Plugin extends AppPlugin {
             const badge = card.querySelector(`#vbadge-${p.getGuid()}`);
             if (badge) {
                 badge.classList.add('update');
+                badge.title = `${installedVersion || 'unknown'} → ${remoteVersion}`;
             }
         }
 
@@ -2235,7 +2236,7 @@ class Plugin extends AppPlugin {
             labelSpan.textContent = knownUpdate ? `Update (v${knownUpdate})` : 'Check Update';
 
             if (knownUpdate) {
-                updateBtn.title = `Update to v${knownUpdate}`;
+                updateBtn.title = 'Update Now';
                 updateBtn.appendChild(this.ui.createIcon('arrow-up'));
                 updateBtn.classList.add('update-btn');
             } else {
@@ -4974,6 +4975,7 @@ class Plugin extends AppPlugin {
                 if (badge) {
                     badge.innerText = `v${currentConf.version}`;
                     badge.classList.remove('update');
+                    badge.title = '';
                 }
 
                 setTimeout(() => {
@@ -4990,11 +4992,13 @@ class Plugin extends AppPlugin {
             const badge = document.getElementById(`vbadge-${pGuid}`);
             if (badge) {
                 badge.classList.add('update');
+                badge.title = `${currentConf.version || currentConf.ver || 'unknown'} → ${remoteJson.version}`;
             }
 
             btnEl.innerHTML = '';
             btnEl.appendChild(this.ui.createIcon('arrow-up'));
             btnEl.className = 'pm-btn pm-btn-update update-btn';
+            btnEl.title = 'Update Now';
             btnEl.disabled = false;
 
             // Move outside the overflow menu so the Update button is always visible.
