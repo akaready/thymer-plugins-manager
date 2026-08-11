@@ -4938,6 +4938,14 @@ class Plugin extends AppPlugin {
                 btnEl.innerHTML = '';
                 btnEl.appendChild(this.ui.createIcon('check'));
 
+                // Move back inside the overflow menu (it was outside because an
+                // update was expected, but the remote isn't actually newer).
+                const wrapper = btnEl.closest('.pm-card-actions-wrapper');
+                const actionsRow = btnEl.closest('.pm-card-actions');
+                if (wrapper && actionsRow && btnEl.parentElement === actionsRow) {
+                    wrapper.insertBefore(btnEl, wrapper.firstChild);
+                }
+
                 // Clear from known updates
                 try {
                     const available = this._readUpdateCache();
@@ -4973,6 +4981,13 @@ class Plugin extends AppPlugin {
             btnEl.appendChild(this.ui.createIcon('arrow-up'));
             btnEl.className = 'pm-btn pm-btn-update update-btn';
             btnEl.disabled = false;
+
+            // Move outside the overflow menu so the Update button is always visible.
+            const wrapper = btnEl.closest('.pm-card-actions-wrapper');
+            const actionsRow = btnEl.closest('.pm-card-actions');
+            if (wrapper && actionsRow && btnEl.parentElement === wrapper) {
+                actionsRow.insertBefore(btnEl, wrapper);
+            }
 
             // Update local storage so indicator persists
             try {
