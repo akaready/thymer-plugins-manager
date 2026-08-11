@@ -2216,7 +2216,6 @@ class Plugin extends AppPlugin {
             card.classList.add('pm-card-upgradeable');
             const badge = card.querySelector(`#vbadge-${p.getGuid()}`);
             if (badge) {
-                badge.innerText = `Update Available (v${remoteVersion})`;
                 badge.classList.add('update');
             }
         }
@@ -4990,7 +4989,6 @@ class Plugin extends AppPlugin {
             const pGuid = pluginObj.getGuid();
             const badge = document.getElementById(`vbadge-${pGuid}`);
             if (badge) {
-                badge.innerText = `Update Available (v${remoteJson.version})`;
                 badge.classList.add('update');
             }
 
