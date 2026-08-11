@@ -2233,7 +2233,7 @@ class Plugin extends AppPlugin {
 
             const labelSpan = document.createElement('span');
             labelSpan.className = 'pm-btn-label';
-            labelSpan.textContent = knownUpdate ? `Update (v${knownUpdate})` : 'Check Update';
+            labelSpan.textContent = knownUpdate ? `Update` : 'Check Update';
 
             if (knownUpdate) {
                 updateBtn.title = 'Update Now';
