@@ -1,5 +1,5 @@
 // Fallback only — the live value is read from the plugin's own config at load.
-const PM_VERSION = '1.22.0';
+const PM_VERSION = '1.23.0';
 
 // Curated per-card color palette (one representative Tailwind-500 per hue). Kept small
 // and inlined so this paste-only plugin stays self-contained (no shared-module import).
@@ -150,6 +150,23 @@ class Plugin extends AppPlugin {
                 const newPanel = await this.ui.createPanel();
                 if (newPanel) {
                     newPanel.navigateToCustomType("plugin-manager-panel");
+                }
+            }
+        });
+
+        // Add a command palette command to open Settings directly
+        this.ui.addCommandPaletteCommand({
+            label: "Plugin: Plugins Manager",
+            icon: "box",
+            onSelected: async () => {
+                const newPanel = await this.ui.createPanel();
+                if (newPanel) {
+                    newPanel.navigateToCustomType("plugin-manager-panel");
+                    requestAnimationFrame(() => {
+                        const element = newPanel.getElement?.() || document;
+                        const settingsTab = element.querySelector('.pm-tab[data-tab="settings"]');
+                        if (settingsTab) settingsTab.click();
+                    });
                 }
             }
         });
