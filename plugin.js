@@ -830,6 +830,12 @@ class Plugin extends AppPlugin {
             await this._saveManagerSettings({ githubPat: pat, communityRepos: repos, ghBackupRepo: ghRepo, ghBackupBranch: ghBranch, ghBackupPath: ghPath });
             this._renderWorkspaceSummary(container);
 
+            // saveConfiguration may trigger a panel re-render; reload the plugin list
+            // on whatever container is current so the Plugins tab doesn't end up stale.
+            const panel = this.ui.getActivePanel();
+            const el = panel?.getElement?.() || container;
+            this.loadPlugins(el);
+
             this.ui.addToaster({ title: "Settings Saved", dismissible: true, autoDestroyTime: 3000 });
         });
 
