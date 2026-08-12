@@ -2071,35 +2071,7 @@ class Plugin extends AppPlugin {
         this._attachColorButton(card, actionsWrapper, this._ghostColorKey(disabled), panelContainer, typeFilter);
         actionsContainer.appendChild(actionsWrapper);
 
-        // Overflow menu trigger (⋮)
-        const triggerBtn = document.createElement('button');
-        triggerBtn.className = 'pm-btn pm-card-overflow-trigger';
-        triggerBtn.title = 'More Actions';
-        try {
-            triggerBtn.appendChild(this.ui.createIcon('dots-vertical'));
-        } catch (e) {
-            triggerBtn.textContent = '⋮';
-        }
-        actionsContainer.appendChild(triggerBtn);
-
-        triggerBtn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            const isOpen = actionsWrapper.classList.contains('pm-open');
-            document.querySelectorAll('.pm-card-actions-wrapper.pm-open').forEach(el => {
-                el.classList.remove('pm-open');
-            });
-            document.querySelectorAll('.pm-card.pm-menu-open').forEach(el => {
-                el.classList.remove('pm-menu-open');
-            });
-            if (!isOpen) {
-                actionsWrapper.classList.add('pm-open');
-                card.classList.add('pm-menu-open');
-            }
-        });
-        actionsWrapper.addEventListener('click', () => {
-            actionsWrapper.classList.remove('pm-open');
-            card.classList.remove('pm-menu-open');
-        });
+        this._attachOverflowMenu(card, actionsWrapper, actionsContainer);
 
         // Last child, so it pins to the far right of the row (see .pm-card-actions > .pm-switch).
         actionsContainer.appendChild(disabledSwitch);
@@ -2214,6 +2186,37 @@ class Plugin extends AppPlugin {
 
     // Attach the color-tag button to a card's action row and paint the card's current tint.
     // Shared by live and disabled cards so both can be color-tagged.
+    _attachOverflowMenu(card, actionsWrapper, actionsContainer) {
+        const triggerBtn = document.createElement('button');
+        triggerBtn.className = 'pm-btn pm-card-overflow-trigger';
+        triggerBtn.title = 'More Actions';
+        try {
+            triggerBtn.appendChild(this.ui.createIcon('dots-vertical'));
+        } catch (e) {
+            triggerBtn.textContent = '⋮';
+        }
+        actionsContainer.appendChild(triggerBtn);
+
+        triggerBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const isOpen = actionsWrapper.classList.contains('pm-open');
+            document.querySelectorAll('.pm-card-actions-wrapper.pm-open').forEach(el => {
+                el.classList.remove('pm-open');
+            });
+            document.querySelectorAll('.pm-card.pm-menu-open').forEach(el => {
+                el.classList.remove('pm-menu-open');
+            });
+            if (!isOpen) {
+                actionsWrapper.classList.add('pm-open');
+                card.classList.add('pm-menu-open');
+            }
+        });
+        actionsWrapper.addEventListener('click', () => {
+            actionsWrapper.classList.remove('pm-open');
+            card.classList.remove('pm-menu-open');
+        });
+    }
+
     _attachColorButton(card, actionsContainer, colorKey, panelContainer, typeFilter) {
         const storedHex = this._pluginColors[colorKey] || null;
 
@@ -2368,33 +2371,10 @@ class Plugin extends AppPlugin {
                     reinstallBtn.disabled = true;
 
                     const { json: remoteJson, js: remoteJs, css: remoteCss } = await this.fetchGithubRepo(sourceRepo, { sourceFiles: conf.__source_files });
-                    this._validatePluginJS(remoteJson.name, remoteJs);
-                    const sanitizedConf = this._sanitizePluginConfig(remoteJson);
-                    if (conf.custom !== undefined) {
-                        sanitizedConf.custom = this._cloneJsonValue(conf.custom);
-                    }
-                    this._preserveUserEdits(sanitizedConf, conf);
-                    this._ensurePluginIdentity(sanitizedConf, conf);
-
-                    const isSelfUpdate = p.getGuid() === this.getGuid();
-
-                    if (remoteCss) {
-                        const sanitizedCSS = this._sanitizeCSS(remoteCss);
-                        await p.saveCSS(sanitizedCSS);
-                    }
-
-                    if (isSelfUpdate) {
-                        const panel = this.ui.getActivePanel();
-                        if (panel) this.ui.closePanel(panel);
-                        localStorage.setItem('pm_self_update_pending', 'true');
-                    } else {
-                        this._autoExport(); // fire-and-forget
-                        this.ui.addToaster({ title: 'Reinstalled', message: `${conf.name} has been reinstalled from source.`, autoDestroyTime: 3000, dismissible: true });
-                    }
-
-                    await p.savePlugin(sanitizedConf, remoteJs);
-
+                    const { isSelfUpdate } = await this._applyPluginUpdate(p, conf, { remoteJson, remoteJs, remoteCss });
                     if (!isSelfUpdate) {
+                        this._autoExport();
+                        this.ui.addToaster({ title: 'Reinstalled', message: `${conf.name} has been reinstalled from source.`, autoDestroyTime: 3000, dismissible: true });
                         this.loadPlugins(panelContainer);
                     }
                 } catch (e) {
@@ -2477,35 +2457,7 @@ class Plugin extends AppPlugin {
         this._attachColorButton(card, actionsWrapper, this._pluginColorKey(conf, p.getGuid()), panelContainer, typeFilter);
         actionsContainer.appendChild(actionsWrapper);
 
-        // Overflow menu trigger (⋮)
-        const triggerBtn = document.createElement('button');
-        triggerBtn.className = 'pm-btn pm-card-overflow-trigger';
-        triggerBtn.title = 'More Actions';
-        try {
-            triggerBtn.appendChild(this.ui.createIcon('dots-vertical'));
-        } catch (e) {
-            triggerBtn.textContent = '⋮';
-        }
-        actionsContainer.appendChild(triggerBtn);
-
-        triggerBtn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            const isOpen = actionsWrapper.classList.contains('pm-open');
-            document.querySelectorAll('.pm-card-actions-wrapper.pm-open').forEach(el => {
-                el.classList.remove('pm-open');
-            });
-            document.querySelectorAll('.pm-card.pm-menu-open').forEach(el => {
-                el.classList.remove('pm-menu-open');
-            });
-            if (!isOpen) {
-                actionsWrapper.classList.add('pm-open');
-                card.classList.add('pm-menu-open');
-            }
-        });
-        actionsWrapper.addEventListener('click', () => {
-            actionsWrapper.classList.remove('pm-open');
-            card.classList.remove('pm-menu-open');
-        });
+        this._attachOverflowMenu(card, actionsWrapper, actionsContainer);
 
         // Enabled/disabled toggle. ON = enabled. Works for GitHub and local plugins
         // (local code is stashed on disable so it can be restored on enable).
@@ -4358,6 +4310,42 @@ class Plugin extends AppPlugin {
 
     // --- Core Features ---
 
+    /**
+     * Deep module: the plugin update save sequence. Handles validate → sanitize →
+     * preserve custom → preserve user edits → ensure identity → saveCSS → (self-update
+     * branch) → savePlugin. Callers manage cache, toasts, and loadPlugins.
+     *
+     * For self-updates, `beforeSave` runs before the save (which tears down this plugin's
+     * context), so the caller can record success / clear the cache while it still can.
+     */
+    async _applyPluginUpdate(pluginObj, conf, { remoteJson, remoteJs, remoteCss, beforeSave = null }) {
+        this._validatePluginJS(remoteJson.name, remoteJs);
+        const sanitizedConf = this._sanitizePluginConfig(remoteJson);
+        if (conf.custom !== undefined) {
+            sanitizedConf.custom = this._cloneJsonValue(conf.custom);
+        }
+        this._preserveUserEdits(sanitizedConf, conf);
+        this._ensurePluginIdentity(sanitizedConf, conf);
+
+        const isSelfUpdate = pluginObj.getGuid() === this.getGuid();
+
+        if (remoteCss) {
+            const sanitizedCSS = this._sanitizeCSS(remoteCss);
+            await pluginObj.saveCSS(sanitizedCSS);
+        }
+
+        if (isSelfUpdate) {
+            if (beforeSave) await beforeSave();
+            const panel = this.ui.getActivePanel();
+            if (panel) this.ui.closePanel(panel);
+            localStorage.setItem('pm_self_update_pending', 'true');
+        }
+
+        await pluginObj.savePlugin(sanitizedConf, remoteJs);
+
+        return { isSelfUpdate, name: sanitizedConf.name, version: remoteJson.version };
+    }
+
     async showInstallDialog(container, typeFilter) {
         const label = typeFilter === 'app' ? 'Plugin' : 'Collection Plugin';
         const url = await this._showPromptModal(`Install ${label}`, `Enter GitHub URL for the ${label} (e.g. https://github.com/user/repo):`);
@@ -4879,62 +4867,31 @@ class Plugin extends AppPlugin {
                 // Fetch + validate remote, mirroring checkAndUpdatePlugin without its UI prompts
                 const { json: remoteJson, js: remoteJs, css: remoteCss } = await this.fetchGithubRepo(sourceRepo, { sourceFiles: conf.__source_files });
 
-                this._validatePluginJS(remoteJson.name, remoteJs);
-                const sanitizedConf = this._sanitizePluginConfig(remoteJson);
-                if (conf.custom !== undefined) {
-                    sanitizedConf.custom = this._cloneJsonValue(conf.custom);
-                }
-                this._preserveUserEdits(sanitizedConf, conf);
-                this._ensurePluginIdentity(sanitizedConf, conf);
+                const { isSelfUpdate, version: remoteVersion } = await this._applyPluginUpdate(p, conf, {
+                    remoteJson, remoteJs, remoteCss,
+                    beforeSave: async () => {
+                        successCount++;
+                        if (notify) {
+                            this._markStatusItem(i, 'done', {
+                                from: this._resolvePluginVersion(conf) || '?',
+                                to: remoteJson.version || remoteJson.ver || '?',
+                            });
+                        }
+                        delete availableUpdates[p.getGuid()];
+                        this._writeUpdateCache(availableUpdates);
+                        this._updateStatusBarIcon();
+                    },
+                });
 
-                const isSelfUpdate = p.getGuid() === this.getGuid();
-
-                if (remoteCss) {
-                    const sanitizedCSS = this._sanitizeCSS(remoteCss);
-                    await p.saveCSS(sanitizedCSS);
-                }
-
-                if (isSelfUpdate) {
-                    // Saving self tears down this plugin's context immediately, so record
-                    // success and clear the cache BEFORE the save, then save last.
-                    successCount++;
-                    if (notify) {
-                        this._markStatusItem(i, 'done', {
-                            from: this._resolvePluginVersion(conf) || '?',
-                            to: remoteJson.version || remoteJson.ver || '?',
-                        });
-                    }
-                    delete availableUpdates[p.getGuid()];
-                    this._writeUpdateCache(availableUpdates);
-                    this._updateStatusBarIcon();
-                    localStorage.setItem('pm_self_update_pending', 'true');
-                    // Only close a panel when OUR panel is the one open. Run from the command
-                    // palette with the manager closed, getActivePanel() returns whatever the
-                    // user is actually looking at — closing that would shut their note.
-                    if (container) {
-                        const panel = this.ui.getActivePanel();
-                        if (panel) this.ui.closePanel(panel);
-                    }
-                    await p.savePlugin(sanitizedConf, remoteJs);
-                } else {
-                    await p.savePlugin(sanitizedConf, remoteJs);
-                    // Only mark as updated once the save has actually succeeded.
+                if (!isSelfUpdate) {
                     successCount++;
                     delete availableUpdates[p.getGuid()];
                     this._writeUpdateCache(availableUpdates);
                     this._updateStatusBarIcon();
                     if (notify) {
-                        // No commit lookup here on purpose: it would cost one extra GitHub API
-                        // call per updated plugin against the 60/hr unauthenticated cap that the
-                        // update check itself already draws from — i.e. reporting the update
-                        // could make the NEXT update check fail. The version delta is the part
-                        // that actually matters.
                         const fromV = this._resolvePluginVersion(conf) || '?';
                         const toV = remoteJson.version || remoteJson.ver || '?';
                         updated.push(`${remoteJson.name || conf.name}  v${fromV} → v${toV}`);
-
-                        // Settles this row in the live toast: spinner → ✓ with the version delta.
-                        // No new toast, so nothing stacks and nothing is replaced.
                         this._markStatusItem(i, 'done', { from: fromV, to: toV });
                     }
                 }
@@ -5276,43 +5233,19 @@ class Plugin extends AppPlugin {
 
             // Overwrite click handler to apply update
             const applyUpdate = async () => {
-                // Local modifications warning check (simple length/hash comparison could go here in future)
                 if (await this._showConfirmModal('Update plugin', `Update ${currentConf.name} from v${this._resolvePluginVersion(currentConf) || '0.0.0'} to v${remoteJson.version}?\nThis will overwrite any local code modifications.`, { confirmText: 'Update' })) {
-                    this._validatePluginJS(remoteJson.name, remoteJs);
-                    const sanitizedConf = this._sanitizePluginConfig(remoteJson);
-                    if (currentConf.custom !== undefined) {
-                        sanitizedConf.custom = this._cloneJsonValue(currentConf.custom);
-                    }
-                    this._preserveUserEdits(sanitizedConf, currentConf);
-                    this._ensurePluginIdentity(sanitizedConf, currentConf);
-
-                    const isSelfUpdate = pluginObj.getGuid() === this.getGuid();
-
-                    if (remoteCss) {
-                        const sanitizedCSS = this._sanitizeCSS(remoteCss);
-                        await pluginObj.saveCSS(sanitizedCSS);
-                    }
-
-                    // Remove from updates cache
-                    try {
-                        const available = this._readUpdateCache();
-                        delete available[pGuid];
-                        this._writeUpdateCache(available);
-                        this._updateStatusBarIcon();
-                    } catch (e) { }
-
-                    if (isSelfUpdate) {
-                        const panel = this.ui.getActivePanel();
-                        if (panel) this.ui.closePanel(panel);
-                        localStorage.setItem('pm_self_update_pending', 'true');
-                    } else {
-                        this._autoExport(); // fire-and-forget
-                        this.ui.addToaster({ title: "Update Successful", message: `${currentConf.name} updated to v${remoteJson.version}`, autoDestroyTime: 3000, dismissible: true });
-                    }
-
-                    await pluginObj.savePlugin(sanitizedConf, remoteJs);
-
+                    const { isSelfUpdate } = await this._applyPluginUpdate(pluginObj, currentConf, {
+                        remoteJson, remoteJs, remoteCss,
+                        beforeSave: async () => {
+                            const available = this._readUpdateCache();
+                            delete available[pGuid];
+                            this._writeUpdateCache(available);
+                            this._updateStatusBarIcon();
+                        },
+                    });
                     if (!isSelfUpdate) {
+                        this._autoExport();
+                        this.ui.addToaster({ title: "Update Successful", message: `${currentConf.name} updated to v${remoteJson.version}`, autoDestroyTime: 3000, dismissible: true });
                         this.loadPlugins(container);
                     }
                 }

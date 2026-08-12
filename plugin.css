@@ -1720,22 +1720,50 @@
 }
 
 /*
- * Card actions: most buttons live in a dropdown overflow menu (⋮) so the card
- * row stays calm. Only the on/off toggle and — when an update is available — the
- * Update button are always visible. The overflow trigger sits between them and
- * the toggle; the wrapper is an absolutely-positioned popover above the row.
+ * Card actions overflow menu — responsive:
+ *
+ * Grid view (default): buttons inline, no ⋮ trigger.
+ * Grid view + narrow: buttons collapse into ⋮ dropdown.
+ * List view: always ⋮ dropdown, regardless of panel width.
+ *
+ * Only the on/off toggle and — when an update is available — the Update button
+ * stay visible outside the dropdown. The wrapper is an absolutely-positioned
+ * popover above the row when in dropdown mode.
  */
 .pm-card-actions {
     position: relative;
 }
 
+/* Base (grid view, wide): buttons inline */
 .pm-card-overflow-trigger {
+    display: none;
+}
+
+.pm-card-actions-wrapper {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+/* Button labels and color dots hidden in grid view (icon-only buttons) */
+.pm-card-actions-wrapper .pm-btn-label {
+    display: none;
+}
+
+.pm-card-actions-wrapper .pm-color-btn-dot {
+    display: none;
+}
+
+/* Narrow grid view OR list view: switch to dropdown mode */
+.pm-container.narrow .pm-card-overflow-trigger,
+.pm-view-list .pm-card-overflow-trigger {
     display: inline-flex;
     flex: 0 0 auto;
     align-self: center;
 }
 
-.pm-card-actions-wrapper {
+.pm-container.narrow .pm-card-actions-wrapper,
+.pm-view-list .pm-card-actions-wrapper {
     display: none;
     position: absolute;
     right: 0;
@@ -1753,12 +1781,14 @@
     align-items: stretch;
 }
 
-.pm-card-actions-wrapper.pm-open {
+.pm-container.narrow .pm-card-actions-wrapper.pm-open,
+.pm-view-list .pm-card-actions-wrapper.pm-open {
     display: flex;
 }
 
 /* Menu items: full-width, left-aligned, quiet until hovered */
-.pm-card-actions-wrapper .pm-btn {
+.pm-container.narrow .pm-card-actions-wrapper .pm-btn,
+.pm-view-list .pm-card-actions-wrapper .pm-btn {
     width: 100%;
     justify-content: flex-start;
     border: none;
@@ -1769,22 +1799,26 @@
     color: var(--pm-text-muted);
 }
 
-.pm-card-actions-wrapper .pm-btn:hover {
+.pm-container.narrow .pm-card-actions-wrapper .pm-btn:hover,
+.pm-view-list .pm-card-actions-wrapper .pm-btn:hover {
     background: var(--pm-bg-hover);
     color: var(--pm-text-color);
 }
 
-.pm-card-actions-wrapper .pm-btn.danger {
+.pm-container.narrow .pm-card-actions-wrapper .pm-btn.danger,
+.pm-view-list .pm-card-actions-wrapper .pm-btn.danger {
     color: var(--pm-danger-fg);
 }
 
-.pm-card-actions-wrapper .pm-btn-label {
+.pm-container.narrow .pm-card-actions-wrapper .pm-btn-label,
+.pm-view-list .pm-card-actions-wrapper .pm-btn-label {
     display: inline-block;
     margin-left: 8px;
 }
 
 /* Color tag button: redesigned as a menu item inside the dropdown */
-.pm-card-actions-wrapper .pm-color-btn {
+.pm-container.narrow .pm-card-actions-wrapper .pm-color-btn,
+.pm-view-list .pm-card-actions-wrapper .pm-color-btn {
     width: 100%;
     height: auto;
     border-radius: 4px;
@@ -1800,7 +1834,8 @@
     margin-left: 0 !important;
 }
 
-.pm-card-actions-wrapper .pm-color-btn-dot {
+.pm-container.narrow .pm-card-actions-wrapper .pm-color-btn-dot,
+.pm-view-list .pm-card-actions-wrapper .pm-color-btn-dot {
     display: inline-block;
     width: 16px;
     height: 16px;
@@ -1812,7 +1847,8 @@
     flex-shrink: 0;
 }
 
-.pm-card-actions-wrapper .pm-color-btn[data-has-color] .pm-color-btn-dot {
+.pm-container.narrow .pm-card-actions-wrapper .pm-color-btn[data-has-color] .pm-color-btn-dot,
+.pm-view-list .pm-card-actions-wrapper .pm-color-btn[data-has-color] .pm-color-btn-dot {
     background: var(--pm-card-accent) !important;
     background-image: none !important;
     border-color: color-mix(in srgb, #ffffff 35%, var(--pm-card-accent));
