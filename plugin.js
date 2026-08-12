@@ -594,6 +594,7 @@ class Plugin extends AppPlugin {
                                 </div>
                                 <div class="pm-tab-actions pm-settings-actions">
                                     <button type="button" class="pm-btn primary" id="pm-restore-github-btn">Restore from GitHub</button>
+                                    <button type="button" class="pm-btn" id="pm-backup-json-btn">Backup JSON</button>
                                     <button type="button" class="pm-btn" id="pm-export-workspace-themes-btn">Export CSS</button>
                                 </div>
                                 <div id="pm-workspace-summary" class="pm-settings-summary"></div>
@@ -843,6 +844,11 @@ class Plugin extends AppPlugin {
             } finally {
                 btn.disabled = false;
             }
+        });
+
+        // Show backup JSON in a copyable textarea; also allows pasting JSON to restore
+        container.querySelector('#pm-backup-json-btn').addEventListener('click', async () => {
+            await this._showBackupJsonModal(container);
         });
 
 
@@ -3574,6 +3580,62 @@ class Plugin extends AppPlugin {
             sha: c.sha,
             date: (c.commit && ((c.commit.author && c.commit.author.date) || (c.commit.committer && c.commit.committer.date))) || ''
         }));
+    }
+
+    async _showBackupJsonModal(container) {
+        const items = await this._getExportData();
+        const payload = this._buildExportPayload('all', items);
+        const jsonText = JSON.stringify(payload, null, 2);
+
+        const tempDiv = document.createElement('div');
+        tempDiv.innerHTML = `
+            <div id="pm-backup-json-modal" class="pm-modal">
+                <div class="pm-modal-content" style="width: 700px; max-height: 85vh; display: flex; flex-direction: column;">
+                    <h3>Backup JSON</h3>
+                    <p style="font-size: 12px; color: var(--pm-text-muted); margin-bottom: 8px;">
+                        Copy the text below to back up your workspace. To restore, paste a backup JSON here and click Restore.
+                    </p>
+                    <textarea id="pm-backup-json-textarea" class="pm-textarea" style="flex: 1; min-height: 300px; font-family: monospace; font-size: 12px; resize: none;">${this._escHtml(jsonText)}</textarea>
+                    <div style="margin-top: 12px; display: flex; justify-content: space-between; align-items: center;">
+                        <button class="pm-btn" id="pm-backup-json-copy">Copy to Clipboard</button>
+                        <div style="display: flex; gap: 8px;">
+                            <button class="pm-btn" id="pm-backup-json-close">Close</button>
+                            <button class="pm-btn primary" id="pm-backup-json-restore">Restore</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `;
+
+        this._openModal(tempDiv);
+
+        const textarea = document.getElementById('pm-backup-json-textarea');
+
+        document.getElementById('pm-backup-json-close').addEventListener('click', () => {
+            this._closeModal(tempDiv);
+        });
+
+        document.getElementById('pm-backup-json-copy').addEventListener('click', async () => {
+            try {
+                await navigator.clipboard.writeText(textarea.value);
+                this.ui.addToaster({ title: 'Copied to clipboard', dismissible: true, autoDestroyTime: 2000 });
+            } catch (e) {
+                textarea.select();
+                this.ui.addToaster({ title: 'Select all and copy manually', dismissible: true, autoDestroyTime: 3000 });
+            }
+        });
+
+        document.getElementById('pm-backup-json-restore').addEventListener('click', async () => {
+            const val = textarea.value.trim();
+            if (!val || (!val.startsWith('[') && !val.startsWith('{'))) {
+                this.ui.addToaster({ title: 'Paste a valid JSON backup to restore', dismissible: true, autoDestroyTime: 3000 });
+                return;
+            }
+            this._closeModal(tempDiv);
+            await this.showImportDialog(container, 'all');
+            const importTextarea = document.getElementById('pm-import-textarea');
+            if (importTextarea) importTextarea.value = val;
+        });
     }
 
     async _showGithubRestorePicker(container) {
