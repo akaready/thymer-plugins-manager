@@ -1393,7 +1393,7 @@ class Plugin extends AppPlugin {
             [...allGlobals, ...allCollections].forEach(p => {
                 try {
                     const conf = p.getExistingCodeAndConfig().json;
-                    const ver = conf.version || conf.ver || '';
+                    const ver = this._resolvePluginVersion(conf) || '';
                     if (conf.__source_repo) {
                         installedSet.add(conf.__source_repo);
                         if (ver) installedVersions.set(conf.__source_repo, ver);
@@ -1821,7 +1821,7 @@ class Plugin extends AppPlugin {
             type: normalizedType,
             sourceRepo: sourceRepo || null,
             sourceFiles: conf.__source_files || null,
-            version: conf.version || conf.ver || '',
+            version: this._resolvePluginVersion(conf) || '',
             icon: conf.icon || null,
             // Kept so disabled cards stay searchable/sortable by description + author.
             description: conf.description || '',
@@ -1854,13 +1854,13 @@ class Plugin extends AppPlugin {
         if (disabledPlugin.sourceRepo) {
             const { json, js, css } = await this.fetchGithubRepo(disabledPlugin.sourceRepo, { sourceFiles: disabledPlugin.sourceFiles });
             if (disabledPlugin.custom !== undefined) json.custom = this._cloneJsonValue(disabledPlugin.custom);
-            await this.installPlugin(json, js, { interactive: false, cssCode: css });
+            await this.installPlugin(json, js, { interactive: false, cssCode: css, allowCustom: true });
             name = json.name || disabledPlugin.name;
         } else {
             // Local plugin: reinstall from the stash (no network).
             const json = this._cloneJsonValue(disabledPlugin.json) || {};
             if (disabledPlugin.custom !== undefined) json.custom = this._cloneJsonValue(disabledPlugin.custom);
-            await this.installPlugin(json, disabledPlugin.code || '', { interactive: false, cssCode: disabledPlugin.css || '' });
+            await this.installPlugin(json, disabledPlugin.code || '', { interactive: false, cssCode: disabledPlugin.css || '', allowCustom: true });
             name = (json && json.name) || disabledPlugin.name;
         }
 
@@ -2066,6 +2066,8 @@ class Plugin extends AppPlugin {
         // Disabled plugins can be color-tagged too (same key, so the tag survives re-enabling).
         const actionsWrapper = document.createElement('div');
         actionsWrapper.className = 'pm-card-actions-wrapper';
+        actionsWrapper.appendChild(this._buildGhostLinkBtn(disabled, panelContainer));
+        actionsWrapper.appendChild(this._buildGhostDeleteBtn(disabled, panelContainer));
         this._attachColorButton(card, actionsWrapper, this._ghostColorKey(disabled), panelContainer, typeFilter);
         actionsContainer.appendChild(actionsWrapper);
 
@@ -2103,6 +2105,96 @@ class Plugin extends AppPlugin {
         actionsContainer.appendChild(disabledSwitch);
 
         return card;
+    }
+
+    _ghostKey(disabled) {
+        return disabled.key || disabled.sourceRepo || ('local:' + disabled.guid);
+    }
+
+    _buildGhostDeleteBtn(disabled, panelContainer) {
+        const btn = document.createElement('button');
+        btn.className = 'pm-btn danger pm-btn-delete';
+        btn.title = 'Delete Plugin';
+        btn.appendChild(this.ui.createIcon('trash'));
+        const label = document.createElement('span');
+        label.className = 'pm-btn-label';
+        label.textContent = 'Delete';
+        btn.appendChild(label);
+
+        btn.addEventListener('click', async () => {
+            const name = disabled.name || 'this plugin';
+            const msg = disabled.sourceRepo
+                ? `Delete ${name}?\nIt remains available at ${disabled.sourceRepo}, so you can install it again later.`
+                : `Delete ${name}?\nIts code is saved ONLY here — there is no repo to reinstall from, so this cannot be undone.`;
+            if (!await this._showConfirmModal('Delete plugin', msg, { confirmText: 'Delete', danger: true })) return;
+
+            delete this._disabledPlugins[this._ghostKey(disabled)];
+            this._saveDisabledPlugins();
+            this._autoExport();
+            this.ui.addToaster({ title: 'Plugin deleted', dismissible: true, autoDestroyTime: 3000 });
+            this.loadPlugins(panelContainer);
+        });
+
+        return btn;
+    }
+
+    _buildGhostLinkBtn(disabled, panelContainer) {
+        const btn = document.createElement('button');
+        btn.className = 'pm-btn pm-btn-link';
+        btn.title = disabled.sourceRepo ? 'Edit GitHub repo link' : 'Link to a GitHub repo for updates';
+        btn.appendChild(this.ui.createIcon('link'));
+        const label = document.createElement('span');
+        label.className = 'pm-btn-label';
+        label.textContent = 'Link Repository';
+        btn.appendChild(label);
+
+        btn.addEventListener('click', async () => {
+            const repoUrl = await this._showPromptModal('Link GitHub Repository', 'Enter the GitHub repo URL for this plugin:', disabled.sourceRepo || '');
+            if (repoUrl === null) return;
+
+            if (repoUrl === '') {
+                if (!disabled.code) {
+                    this.ui.addToaster({
+                        title: 'Cannot clear the link',
+                        message: `${disabled.name || 'This plugin'} has no saved code, so its repo is the only way to bring it back. Delete it instead.`,
+                        autoDestroyTime: 6000, dismissible: true
+                    });
+                    return;
+                }
+                if (!await this._showConfirmModal('Clear repository link', 'Clear the repository link? It will be restored from its saved code instead of GitHub.', { confirmText: 'Clear link', danger: true })) return;
+            } else if (!this._isValidGithubUrl(repoUrl)) {
+                this.ui.addToaster({ title: 'Invalid URL', message: 'Please enter a valid github.com URL.', autoDestroyTime: 4000, dismissible: true });
+                return;
+            }
+
+            const oldKey = this._ghostKey(disabled);
+            const oldColorKey = this._ghostColorKey(disabled);
+
+            disabled.sourceRepo = repoUrl || null;
+            if (!repoUrl) disabled.sourceFiles = null;
+            disabled.key = repoUrl || ('local:' + disabled.guid);
+
+            delete this._disabledPlugins[oldKey];
+            this._disabledPlugins[disabled.key] = disabled;
+            this._saveDisabledPlugins();
+
+            const newColorKey = this._ghostColorKey(disabled);
+            if (newColorKey !== oldColorKey && this._pluginColors[oldColorKey]) {
+                this._pluginColors[newColorKey] = this._pluginColors[oldColorKey];
+                delete this._pluginColors[oldColorKey];
+                this._savePluginColors();
+            }
+
+            this._autoExport();
+            this.ui.addToaster({
+                title: 'Repo Updated',
+                message: repoUrl ? `${disabled.name} linked to ${repoUrl}.` : `${disabled.name} link removed.`,
+                autoDestroyTime: 4000, dismissible: true
+            });
+            this.loadPlugins(panelContainer);
+        });
+
+        return btn;
     }
 
     _ghostColorKey(disabled) {
@@ -2172,7 +2264,7 @@ class Plugin extends AppPlugin {
                 <div class="pm-card-info">
                     <h3 id="pm-title-${p.getGuid()}" class="pm-card-title">
                         <span class="pm-card-name">${this._escHtml(conf.name || 'Unnamed Plugin')}</span>
-                        <span class="pm-badge pm-version-badge" id="vbadge-${p.getGuid()}">v${this._escHtml(conf.version || conf.ver || '0.0.0')}</span>
+                        <span class="pm-badge pm-version-badge" id="vbadge-${p.getGuid()}">v${this._escHtml(this._resolvePluginVersion(conf) || '0.0.0')}</span>
                         ${sourceRepo ? `<span class="pm-gh-glyph pm-gh-mark" aria-label="GitHub source" title="GitHub source" data-external-url="${this._escHtml(sourceRepo)}" role="link" tabindex="0"></span>` : ''}
                     </h3>
                     <div class="pm-card-attr" id="pm-attr-${p.getGuid()}"></div>
@@ -2216,7 +2308,7 @@ class Plugin extends AppPlugin {
         const updates = availableUpdates || {};
         const updateInfo = updates[p.getGuid()];
         const remoteVersion = updateInfo ? updateInfo.version : null;
-        const installedVersion = conf.version || conf.ver;
+        const installedVersion = this._resolvePluginVersion(conf);
 
         if (this._isRemoteVersionNewer(remoteVersion, installedVersion)) {
             card.classList.add('pm-card-upgradeable');
@@ -2281,6 +2373,8 @@ class Plugin extends AppPlugin {
                     if (conf.custom !== undefined) {
                         sanitizedConf.custom = this._cloneJsonValue(conf.custom);
                     }
+                    this._preserveUserEdits(sanitizedConf, conf);
+                    this._ensurePluginIdentity(sanitizedConf, conf);
 
                     const isSelfUpdate = p.getGuid() === this.getGuid();
 
@@ -2523,7 +2617,7 @@ class Plugin extends AppPlugin {
             conf,
             name: conf.name || 'Unnamed Plugin',
             description: conf.description || '',
-            version: conf.version || conf.ver || '',
+            version: this._resolvePluginVersion(conf) || '',
             sourceRepo: conf.__source_repo || '',
             author: attr ? attr.label : '',
             colorHex: this._pluginColors[this._pluginColorKey(conf, p.getGuid())] || null,
@@ -3795,7 +3889,9 @@ class Plugin extends AppPlugin {
             return sanitized;
         }
 
-        const ALLOWED_KEYS = ['name', 'type', 'description', 'version', 'icon', 'permissions', '__source_repo', '__source_files', 'ver'];
+        const ALLOWED_KEYS = ['name', 'type', 'description', 'version', 'icon', 'permissions',
+            'author', 'homepage', 'repository', 'instructions', 'coffee',
+            '__source_repo', '__source_files', '__source_meta', 'ver'];
         const COLLECTION_SCHEMA_KEYS = ['color', 'item_name', 'show_sidebar_items', 'show_cmdpal_items',
             'sidebar_action', 'fields', 'views', 'page_field_ids', 'sidebar_record_sort_field_id',
             'sidebar_record_sort_dir', 'managed', 'home', 'related_query', 'default_banner'];
@@ -3805,7 +3901,9 @@ class Plugin extends AppPlugin {
                 sanitized[key] = jsonConf[key];
             }
         }
-        const isCollection = (jsonConf.type || '').toLowerCase() === 'collection';
+        const isCollection = (jsonConf.type || '').toLowerCase() === 'collection'
+            || Array.isArray(jsonConf.fields)
+            || Array.isArray(jsonConf.views);
         if (isCollection) {
             for (const key of COLLECTION_SCHEMA_KEYS) {
                 if (jsonConf[key] !== undefined) {
@@ -3821,6 +3919,58 @@ class Plugin extends AppPlugin {
             sanitized.custom = JSON.parse(customJson);
         }
         return sanitized;
+    }
+
+    _preserveUserEdits(nextConf, installedConf) {
+        const USER_OWNED = ['name', 'icon', 'color'];
+        const lastFromSource = installedConf.__source_meta || {};
+        const snapshot = {};
+
+        for (const key of USER_OWNED) {
+            if (nextConf[key] !== undefined) snapshot[key] = nextConf[key];
+
+            const installed = installedConf[key];
+            if (installed === undefined) continue;
+
+            const shipped = lastFromSource[key];
+            const userChangedIt = (shipped === undefined)
+                ? installed !== nextConf[key]
+                : installed !== shipped;
+
+            if (userChangedIt) nextConf[key] = installed;
+        }
+
+        nextConf.__source_meta = snapshot;
+        return nextConf;
+    }
+
+    _ensurePluginIdentity(conf, existingConf) {
+        if ((typeof conf.name !== 'string' || !conf.name.trim())
+            && existingConf && typeof existingConf.name === 'string' && existingConf.name.trim()) {
+            conf.name = existingConf.name;
+        }
+        if (typeof conf.name !== 'string' || !conf.name.trim()) {
+            throw new Error('Plugin config has no "name" — refusing to save a nameless config.');
+        }
+        if (existingConf) {
+            if (conf.__source_repo === undefined && existingConf.__source_repo !== undefined) {
+                conf.__source_repo = existingConf.__source_repo;
+            }
+            if (conf.__source_files === undefined && existingConf.__source_files !== undefined) {
+                conf.__source_files = this._cloneJsonValue(existingConf.__source_files);
+            }
+        }
+        return conf;
+    }
+
+    _resolvePluginVersion(conf) {
+        if (!conf) return '';
+        if (typeof conf.version === 'string' && conf.version) return conf.version;
+        const custom = conf.custom;
+        if (custom && typeof custom.pluginVersion === 'string' && custom.pluginVersion) {
+            return custom.pluginVersion;
+        }
+        return '';
     }
 
     /** Security: Strip dangerous CSS constructs that could exfiltrate data or execute scripts */
@@ -4175,27 +4325,22 @@ class Plugin extends AppPlugin {
         let cssFile = distFiles ? this._findFileByRole(distFiles, 'css') : null;
         if (!cssFile) cssFile = this._findFileByRole(files, 'css');
 
-        // Fetch the actual file contents
-        const jsonRes = await fetch(jsonFile.download_url);
-        if (!jsonRes.ok) throw new Error(`Failed to download ${jsonFile.name}`);
+        // Fetch the actual file contents via _fetchGithubFile (PAT-aware — works for private repos)
+        const branchMatch = jsonFile.download_url && jsonFile.download_url.match(/raw\.githubusercontent\.com\/[^/]+\/[^/]+\/([^/]+)\//);
+        const branch = branchMatch ? branchMatch[1] : 'main';
 
         let pluginJson;
-        const jsonText = await jsonRes.text();
         try {
-            pluginJson = JSON.parse(jsonText);
+            pluginJson = JSON.parse(await this._fetchGithubFile(owner, repo, branch, jsonFile.path));
         } catch (e) {
-            throw new Error(`${jsonFile.name} is not valid JSON`);
+            throw new Error(`${jsonFile.name} is not valid JSON or could not be fetched`);
         }
 
-        const jsRes = await fetch(jsFile.download_url);
-        if (!jsRes.ok) throw new Error(`Failed to download ${jsFile.name}`);
-        const pluginJs = await jsRes.text();
+        const pluginJs = await this._fetchGithubFile(owner, repo, branch, jsFile.path);
 
         pluginJson.__source_repo = url;
-        // Cache discovered filenames — detect branch from download_url
-        const branchMatch = jsonFile.download_url && jsonFile.download_url.match(/raw\.githubusercontent\.com\/[^/]+\/[^/]+\/([^/]+)\//);
         pluginJson.__source_files = buildSourceFiles(
-            branchMatch ? branchMatch[1] : 'main',
+            branch,
             jsonFile.name,
             jsFile.name,
             cssFile ? cssFile.name : null
@@ -4204,8 +4349,7 @@ class Plugin extends AppPlugin {
         const result = { json: pluginJson, js: pluginJs };
         if (cssFile) {
             try {
-                const cssRes = await fetch(cssFile.download_url);
-                if (cssRes.ok) result.css = await cssRes.text();
+                result.css = await this._fetchGithubFile(owner, repo, branch, cssFile.path);
             } catch (e) { /* CSS is optional */ }
         }
 
@@ -4247,7 +4391,7 @@ class Plugin extends AppPlugin {
         }
     }
 
-    async installPlugin(jsonConf, jsCode, { interactive = true, cssCode = null, trustedConfig = false } = {}) {
+    async installPlugin(jsonConf, jsCode, { interactive = true, cssCode = null, trustedConfig = false, allowCustom = false } = {}) {
         // Skip the Plugins Manager itself — it doesn't need to be reinstalled
         const name = (jsonConf.name || '').toLowerCase();
         if (name === 'plugins manager') {
@@ -4320,10 +4464,11 @@ class Plugin extends AppPlugin {
         // updates the user's existing `custom` always wins so a repo can't clobber
         // saved settings/secrets.
         const isFreshInstall = !targetPlugin;
-        const sanitizedConf = this._sanitizePluginConfig(jsonConf, { allowCustom: trustedConfig || isFreshInstall, preserveUnknownKeys: trustedConfig });
+        const sanitizedConf = this._sanitizePluginConfig(jsonConf, { allowCustom: trustedConfig || allowCustom || isFreshInstall, preserveUnknownKeys: trustedConfig });
         if (existingConf && existingConf.custom !== undefined && (!trustedConfig || jsonConf.custom === undefined)) {
             sanitizedConf.custom = this._cloneJsonValue(existingConf.custom);
         }
+        this._ensurePluginIdentity(sanitizedConf, existingConf);
 
         // Validate update/reinstall path too (fresh install already validated above)
         if (targetPlugin) {
@@ -4703,7 +4848,7 @@ class Plugin extends AppPlugin {
                     try {
                         const json = p.getExistingCodeAndConfig().json;
                         name = json.name || name;
-                        from = json.version || json.ver || '?';
+                        from = this._resolvePluginVersion(json) || '?';
                     } catch (e) { }
                     let to = '?';
                     try { to = (availableUpdates[p.getGuid()] || {}).version || '?'; } catch (e) { }
@@ -4739,6 +4884,8 @@ class Plugin extends AppPlugin {
                 if (conf.custom !== undefined) {
                     sanitizedConf.custom = this._cloneJsonValue(conf.custom);
                 }
+                this._preserveUserEdits(sanitizedConf, conf);
+                this._ensurePluginIdentity(sanitizedConf, conf);
 
                 const isSelfUpdate = p.getGuid() === this.getGuid();
 
@@ -4753,7 +4900,7 @@ class Plugin extends AppPlugin {
                     successCount++;
                     if (notify) {
                         this._markStatusItem(i, 'done', {
-                            from: conf.version || conf.ver || '?',
+                            from: this._resolvePluginVersion(conf) || '?',
                             to: remoteJson.version || remoteJson.ver || '?',
                         });
                     }
@@ -4782,7 +4929,7 @@ class Plugin extends AppPlugin {
                         // update check itself already draws from — i.e. reporting the update
                         // could make the NEXT update check fail. The version delta is the part
                         // that actually matters.
-                        const fromV = conf.version || conf.ver || '?';
+                        const fromV = this._resolvePluginVersion(conf) || '?';
                         const toV = remoteJson.version || remoteJson.ver || '?';
                         updated.push(`${remoteJson.name || conf.name}  v${fromV} → v${toV}`);
 
@@ -4798,6 +4945,55 @@ class Plugin extends AppPlugin {
                     failedNames.push(conf.name || 'Unknown');
                 } catch (e) { failedNames.push(p.getGuid()); }
                 if (notify) this._markStatusItem(i, 'failed');
+            }
+        }
+
+        // Save verification: check if configs actually landed. savePlugin() resolves without
+        // telling us whether the CONFIG was accepted — Thymer can take the code and quietly keep
+        // the old manifest (e.g. a collection whose schema was stripped). The version then never
+        // advances, the plugin is re-offered on every check, and "Updated" is a lie.
+        const selfGuid = this.getGuid();
+        const toVerify = [];
+        for (let idx = 0; idx < pluginsToUpdate.length; idx++) {
+            const p = pluginsToUpdate[idx];
+            try {
+                const guid = p.getGuid();
+                if (guid === selfGuid) continue;
+                if (!availableUpdates[guid] && !failedNames.includes(p.getExistingCodeAndConfig().json.name)) {
+                    // Was successfully updated (removed from availableUpdates) — verify it landed
+                    const toV = (this._readUpdateCache()[guid] || {}).version;
+                    if (!toV) {
+                        // Already cleared from cache — track from the update list
+                        const updateEntry = updated.find(u => u.includes(p.getExistingCodeAndConfig().json.name || ''));
+                        toVerify.push({ guid, name: p.getExistingCodeAndConfig().json.name || 'Unknown', index: idx, to: updateEntry ? updateEntry.match(/→ v(\S+)/)?.[1] || '?' : '?' });
+                    }
+                }
+            } catch (e) { }
+        }
+        if (toVerify.length) {
+            const live = new Map();
+            try {
+                const all = [...await this.data.getAllGlobalPlugins(), ...await this.data.getAllCollections()];
+                for (const q of all) {
+                    try { live.set(q.getGuid(), q.getExistingCodeAndConfig().json); } catch (e) { }
+                }
+            } catch (e) { }
+
+            if (live.size) {
+                for (const item of toVerify) {
+                    const json = live.get(item.guid);
+                    if (!json) continue;
+                    const landed = this._resolvePluginVersion(json) || '?';
+                    if (landed === item.to) continue;
+
+                    successCount = Math.max(0, successCount - 1);
+                    const failName = `${item.name} (config did not save)`;
+                    if (!failedNames.includes(failName)) failedNames.push(failName);
+                    availableUpdates[item.guid] = { name: item.name, version: item.to };
+                    this._writeUpdateCache(availableUpdates);
+                    this._updateStatusBarIcon();
+                    if (notify) this._markStatusItem(item.index, 'failed', { note: 'config did not save' });
+                }
             }
         }
 
@@ -5003,12 +5199,12 @@ class Plugin extends AppPlugin {
                 throw new Error(`Failed to fetch from ${sourceRepo}: ${fetchErr.message}`);
             }
 
-            if (!forceUpdate && !this._isRemoteVersionNewer(remoteJson.version, currentConf.version)) {
-                const localAhead = remoteJson.version !== currentConf.version;
+            if (!forceUpdate && !this._isRemoteVersionNewer(remoteJson.version, this._resolvePluginVersion(currentConf))) {
+                const localAhead = remoteJson.version !== this._resolvePluginVersion(currentConf);
                 this.ui.addToaster({
                     title: "Up to date",
                     message: localAhead
-                        ? `${currentConf.name} (v${currentConf.version}) is ahead of GitHub (v${remoteJson.version || 'none'}). Push the repo to sync. Use Reinstall to overwrite local anyway.`
+                        ? `${currentConf.name} (v${this._resolvePluginVersion(currentConf) || '0.0.0'}) is ahead of GitHub (v${remoteJson.version || 'none'}). Push the repo to sync. Use Reinstall to overwrite local anyway.`
                         : `${currentConf.name} is already on the latest version.`,
                     autoDestroyTime: localAhead ? 6000 : 3000,
                     dismissible: true
@@ -5035,7 +5231,7 @@ class Plugin extends AppPlugin {
 
                 const badge = document.getElementById(`vbadge-${pluginObj.getGuid()}`);
                 if (badge) {
-                    badge.innerText = `v${currentConf.version}`;
+                    badge.innerText = `v${this._resolvePluginVersion(currentConf) || currentConf.version || '0.0.0'}`;
                     badge.classList.remove('update');
                     badge.title = '';
                 }
@@ -5054,7 +5250,7 @@ class Plugin extends AppPlugin {
             const badge = document.getElementById(`vbadge-${pGuid}`);
             if (badge) {
                 badge.classList.add('update');
-                badge.title = `${currentConf.version || currentConf.ver || 'unknown'} → ${remoteJson.version}`;
+                badge.title = `${this._resolvePluginVersion(currentConf) || currentConf.ver || 'unknown'} → ${remoteJson.version}`;
             }
 
             btnEl.innerHTML = '';
@@ -5081,12 +5277,14 @@ class Plugin extends AppPlugin {
             // Overwrite click handler to apply update
             const applyUpdate = async () => {
                 // Local modifications warning check (simple length/hash comparison could go here in future)
-                if (await this._showConfirmModal('Update plugin', `Update ${currentConf.name} from v${currentConf.version} to v${remoteJson.version}?\nThis will overwrite any local code modifications.`, { confirmText: 'Update' })) {
+                if (await this._showConfirmModal('Update plugin', `Update ${currentConf.name} from v${this._resolvePluginVersion(currentConf) || '0.0.0'} to v${remoteJson.version}?\nThis will overwrite any local code modifications.`, { confirmText: 'Update' })) {
                     this._validatePluginJS(remoteJson.name, remoteJs);
                     const sanitizedConf = this._sanitizePluginConfig(remoteJson);
                     if (currentConf.custom !== undefined) {
                         sanitizedConf.custom = this._cloneJsonValue(currentConf.custom);
                     }
+                    this._preserveUserEdits(sanitizedConf, currentConf);
+                    this._ensurePluginIdentity(sanitizedConf, currentConf);
 
                     const isSelfUpdate = pluginObj.getGuid() === this.getGuid();
 
