@@ -827,59 +827,23 @@ class Plugin extends AppPlugin {
             const ghRepo = container.querySelector('#pm-gh-repo-input').value.trim();
             const ghBranch = container.querySelector('#pm-gh-branch-input').value.trim();
             const ghPath = container.querySelector('#pm-gh-path-input').value.trim();
-            const containerBeforeSave = container;
-            const isConnectedBefore = container.isConnected;
             await this._saveManagerSettings({ githubPat: pat, communityRepos: repos, ghBackupRepo: ghRepo, ghBackupBranch: ghBranch, ghBackupPath: ghPath });
-
-            // Diagnostic: check container state and SDK state after save
-            const stillConnected = container.isConnected;
-            const panel = this.ui.getActivePanel();
-            const el = panel?.getElement?.();
-            let globalsCount = -1;
-            try { globalsCount = (await this.data.getAllGlobalPlugins()).length; } catch (e) { globalsCount = 'err: ' + e.message; }
-            console.log('[PM Debug] After saveSettings:', {
-                containerStillConnected: stillConnected,
-                wasConnectedBefore: isConnectedBefore,
-                sameElement: el === container,
-                activePanelExists: !!panel,
-                activePanelElement: el,
-                globalsCount,
-                listCacheApp: (this._listCache.app || []).length,
-                listCacheAppLive: (this._listCache.app || []).filter(i => i.kind === 'live').length,
-                listCacheAppGhost: (this._listCache.app || []).filter(i => i.kind === 'ghost').length,
-            });
-
             this._renderWorkspaceSummary(container);
 
-            // Try immediate reload
-            const reloadTarget = el && el !== container ? el : container;
-            console.log('[PM Debug] Reloading plugins on', reloadTarget === container ? 'original container' : 'active panel element');
-            this.loadPlugins(reloadTarget).then(() => {
-                console.log('[PM Debug] loadPlugins done. listCacheApp:', {
-                    total: (this._listCache.app || []).length,
-                    live: (this._listCache.app || []).filter(i => i.kind === 'live').length,
-                    ghost: (this._listCache.app || []).filter(i => i.kind === 'ghost').length,
-                });
-                const listEl = reloadTarget.querySelector('#pm-global-list');
-                console.log('[PM Debug] #pm-global-list children:', listEl ? listEl.children.length : 'not found',
-                    'still connected:', reloadTarget.isConnected);
-            });
-
-            // Also try delayed reload in case a re-render happens later
-            setTimeout(() => {
-                const panel2 = this.ui.getActivePanel();
-                const el2 = panel2?.getElement?.();
-                if (el2) {
-                    console.log('[PM Debug] Delayed reload on active panel. Same as original?', el2 === container);
-                    this.loadPlugins(el2).then(() => {
-                        console.log('[PM Debug] Delayed loadPlugins done. listCacheApp:', {
-                            total: (this._listCache.app || []).length,
-                            live: (this._listCache.app || []).filter(i => i.kind === 'live').length,
-                            ghost: (this._listCache.app || []).filter(i => i.kind === 'ghost').length,
-                        });
-                    });
+            // saveConfiguration on the Plugins Manager causes Thymer to briefly
+            // re-enumerate all plugins — getAllGlobalPlugins() returns empty until
+            // the SDK settles. Retry loadPlugins until live plugins appear.
+            const tryReload = async (retries) => {
+                const panel = this.ui.getActivePanel();
+                const el = panel?.getElement?.() || container;
+                if (!el || !el.isConnected) return;
+                await this.loadPlugins(el);
+                const liveCount = (this._listCache.app || []).filter(i => i.kind === 'live').length;
+                if (liveCount === 0 && retries > 0) {
+                    setTimeout(() => tryReload(retries - 1), 500);
                 }
-            }, 500);
+            };
+            tryReload(6);
 
             this.ui.addToaster({ title: "Settings Saved", dismissible: true, autoDestroyTime: 3000 });
         });
