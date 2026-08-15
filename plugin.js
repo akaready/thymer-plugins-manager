@@ -828,22 +828,18 @@ class Plugin extends AppPlugin {
             const ghBranch = container.querySelector('#pm-gh-branch-input').value.trim();
             const ghPath = container.querySelector('#pm-gh-path-input').value.trim();
             await this._saveManagerSettings({ githubPat: pat, communityRepos: repos, ghBackupRepo: ghRepo, ghBackupBranch: ghBranch, ghBackupPath: ghPath });
-            this._renderWorkspaceSummary(container);
 
-            // saveConfiguration on the Plugins Manager causes Thymer to briefly
-            // re-enumerate all plugins — getAllGlobalPlugins() returns empty until
-            // the SDK settles. Retry loadPlugins until live plugins appear.
-            const tryReload = async (retries) => {
-                const panel = this.ui.getActivePanel();
-                const el = panel?.getElement?.() || container;
-                if (!el || !el.isConnected) return;
-                await this.loadPlugins(el);
-                const liveCount = (this._listCache.app || []).filter(i => i.kind === 'live').length;
-                if (liveCount === 0 && retries > 0) {
-                    setTimeout(() => tryReload(retries - 1), 500);
-                }
-            };
-            tryReload(6);
+            // saveConfiguration on self makes getAllGlobalPlugins() return empty on
+            // this instance — the data reference goes stale. Force a full panel
+            // re-render via navigateToCustomType, which is what close/reopen does.
+            // If a new instance was created by the save, its renderUI callback is used.
+            const panel = this.ui.getActivePanel();
+            if (panel) {
+                panel.navigateToCustomType("plugin-manager-panel");
+            } else {
+                this._renderWorkspaceSummary(container);
+                this.loadPlugins(container);
+            }
 
             this.ui.addToaster({ title: "Settings Saved", dismissible: true, autoDestroyTime: 3000 });
         });
