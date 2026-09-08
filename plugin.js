@@ -1,5 +1,10 @@
 // Fallback only — the live value is read from the plugin's own config at load.
-const PM_VERSION = '1.24.0';
+const PM_VERSION = '1.24.1';
+
+// Thymer itself has no 500KB plugin-code cap; this is a Plugins Manager sanity check.
+// 5MB covers large paste-ready bundles (e.g. Generate Banner ~0.9MB) without going unbounded.
+const MAX_PLUGIN_JS_BYTES = 5 * 1024 * 1024;
+const MAX_PLUGIN_JS_LABEL = '5MB';
 
 // Curated per-card color palette (one representative Tailwind-500 per hue). Kept small
 // and inlined so this paste-only plugin stays self-contained (no shared-module import).
@@ -4489,9 +4494,9 @@ class Plugin extends AppPlugin {
             // createGlobalPlugin() orphans an empty "New Global Plugin" record.
             this._validatePluginJS(jsonConf.name, jsCode);
 
-            // Security: enforce code size limit (500KB)
-            if (jsCode && jsCode.length > 500 * 1024) {
-                throw new Error(`"${jsonConf.name || 'Unknown'}" code exceeds the 500KB size limit.`);
+            // Security: enforce code size limit (5MB)
+            if (jsCode && jsCode.length > MAX_PLUGIN_JS_BYTES) {
+                throw new Error(`"${jsonConf.name || 'Unknown'}" code exceeds the ${MAX_PLUGIN_JS_LABEL} size limit.`);
             }
         }
 
@@ -4510,8 +4515,8 @@ class Plugin extends AppPlugin {
         // Validate update/reinstall path too (fresh install already validated above)
         if (targetPlugin) {
             this._validatePluginJS(jsonConf.name, jsCode);
-            if (jsCode && jsCode.length > 500 * 1024) {
-                throw new Error(`"${jsonConf.name || 'Unknown'}" code exceeds the 500KB size limit.`);
+            if (jsCode && jsCode.length > MAX_PLUGIN_JS_BYTES) {
+                throw new Error(`"${jsonConf.name || 'Unknown'}" code exceeds the ${MAX_PLUGIN_JS_LABEL} size limit.`);
             }
         }
 
